@@ -23,6 +23,7 @@ fn manifest() -> Manifest {
                 path: "DCIM/Camera/PXL_20260101_120000000.jpg".into(),
                 mime_type: "image/jpeg".into(),
                 date_taken_ms: Some(1_767_268_800_000),
+                date_added_ms: Some(1_767_268_802_000),
                 modified_ms: 1_767_268_801_000,
                 original: digest(b"jpeg with gps"),
                 sent: digest(b"jpeg without gps"),
@@ -31,6 +32,7 @@ fn manifest() -> Manifest {
                 path: "Download/r\u{e9}sum\u{e9}.pdf".into(),
                 mime_type: "application/pdf".into(),
                 date_taken_ms: None,
+                date_added_ms: None,
                 modified_ms: 1_700_000_000_000,
                 original: digest(b"pdf"),
                 sent: digest(b"pdf"),
@@ -562,4 +564,24 @@ fn source_sends_only_what_the_plan_asks_for() {
     assert_eq!(plan.check_request(0), Err(Error::NotInPlan));
     assert_eq!(plan.check_request(1), Err(Error::NotInPlan));
     assert_eq!(plan.check_request(3), Err(Error::NotInPlan));
+}
+
+#[test]
+fn date_added_round_trips_with_and_without_a_value() {
+    let (source, target) = pair(Method::Nfc);
+    for (taken, added) in [
+        (None, None),
+        (None, Some(1_600_000_000_000)),
+        (Some(1_500_000_000_000), None),
+        (Some(-1), Some(i64::MAX)),
+    ] {
+        let mut m = manifest();
+        m.files[0].date_taken_ms = taken;
+        m.files[0].date_added_ms = added;
+        let signed = source.sign_manifest(&m).unwrap();
+        let verified = target.verify_manifest(&signed).unwrap();
+        assert_eq!(verified.files[0].date_taken_ms, taken);
+        assert_eq!(verified.files[0].date_added_ms, added);
+        assert_eq!(verified, m);
+    }
 }

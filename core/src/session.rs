@@ -252,6 +252,7 @@ mod tests {
             path: path.into(),
             mime_type: "image/jpeg".into(),
             date_taken_ms: None,
+            date_added_ms: None,
             modified_ms: 0,
             original: FileDigest {
                 size: 5,

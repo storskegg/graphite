@@ -27,6 +27,8 @@ pub struct ManifestEntry {
     pub mime_type: String,
     /// MediaStore `DATE_TAKEN` on the source, in milliseconds since the epoch.
     pub date_taken_ms: Option<i64>,
+    /// MediaStore `DATE_ADDED` on the source, in milliseconds since the epoch.
+    pub date_added_ms: Option<i64>,
     /// File modification time, in milliseconds since the epoch.
     pub modified_ms: i64,
     /// The bytes on the source.
@@ -183,6 +185,22 @@ fn digest(w: &mut Writer, d: &FileDigest) {
     w.u64(d.size).fixed(&d.blake3);
 }
 
+/// An absent value is a single 0; a present one is 1 and the value.
+fn optional_i64(w: &mut Writer, v: Option<i64>) {
+    match v {
+        Some(t) => w.u8(1).i64(t),
+        None => w.u8(0),
+    };
+}
+
+fn read_optional_i64(r: &mut Reader) -> Result<Option<i64>, Error> {
+    match r.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(r.i64()?)),
+        _ => Err(Error::Malformed),
+    }
+}
+
 fn read_digest(r: &mut Reader) -> Result<FileDigest, Error> {
     Ok(FileDigest {
         size: r.u64()?,
@@ -212,10 +230,8 @@ impl Manifest {
             .u32(count(self.files.len()));
         for f in &self.files {
             w.str(&f.path).str(&f.mime_type);
-            match f.date_taken_ms {
-                Some(t) => w.u8(1).i64(t),
-                None => w.u8(0),
-            };
+            optional_i64(&mut w, f.date_taken_ms);
+            optional_i64(&mut w, f.date_added_ms);
             w.i64(f.modified_ms);
             digest(&mut w, &f.original);
             digest(&mut w, &f.sent);
@@ -238,11 +254,8 @@ impl Manifest {
             files.push(ManifestEntry {
                 path: r.str()?,
                 mime_type: r.str()?,
-                date_taken_ms: match r.u8()? {
-                    0 => None,
-                    1 => Some(r.i64()?),
-                    _ => return Err(Error::Malformed),
-                },
+                date_taken_ms: read_optional_i64(&mut r)?,
+                date_added_ms: read_optional_i64(&mut r)?,
                 modified_ms: r.i64()?,
                 original: read_digest(&mut r)?,
                 sent: read_digest(&mut r)?,
@@ -418,6 +431,49 @@ impl Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(date_taken_ms: Option<i64>, date_added_ms: Option<i64>) -> ManifestEntry {
+        let digest = FileDigest {
+            size: 1,
+            blake3: [7; 32],
+        };
+        ManifestEntry {
+            path: "DCIM/a.jpg".into(),
+            mime_type: "image/jpeg".into(),
+            date_taken_ms,
+            date_added_ms,
+            modified_ms: 3,
+            original: digest,
+            sent: digest,
+        }
+    }
+
+    /// One encoding per manifest: decoding and re-encoding gives the same
+    /// bytes, an absent date is one zero byte, and a presence flag other than
+    /// 0 or 1 is refused.
+    #[test]
+    fn manifest_encoding_is_canonical() {
+        let manifest = |added| Manifest {
+            metadata: MetadataChoice::KeepAll,
+            stripper_version: "1".into(),
+            files: vec![entry(Some(1), added)],
+        };
+        let without = manifest(None).encode();
+        let with = manifest(Some(2)).encode();
+        assert_eq!(with.len(), without.len() + 8);
+        for (m, bytes) in [(manifest(None), &without), (manifest(Some(2)), &with)] {
+            let decoded = Manifest::decode(bytes).unwrap();
+            assert_eq!(decoded, m);
+            assert_eq!(&decoded.encode(), bytes);
+        }
+        // The date-added flag sits right after date taken (flag + 8 bytes),
+        // which follows the path and MIME type.
+        let flag = 1 + 4 + 1 + 4 + 4 + 10 + 4 + 10 + 1 + 8;
+        assert_eq!(without[flag], 0);
+        let mut bad = without.clone();
+        bad[flag] = 2;
+        assert_eq!(Manifest::decode(&bad), Err(Error::Malformed));
+    }
 
     #[test]
     fn each_entry_exactly_once() {
