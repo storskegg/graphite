@@ -20,6 +20,8 @@ phones. Nothing to install yet.
 - Keys come from hybrid X25519 + ML-KEM-768 (X-Wing) in HPKE; bulk data is
   chunked XChaCha20-Poly1305; manifests and receipts are signed with ML-DSA-65.
 - Copying the same phone twice copies nothing the second time.
+- Every transfer asks whether to keep photo and video metadata or remove location
+  and identifiers (or everything not needed for display), losslessly, on the old phone.
 
 ## License
 
