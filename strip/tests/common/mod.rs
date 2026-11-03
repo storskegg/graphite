@@ -387,8 +387,52 @@ pub fn check(
     }
 
     pixels(label, input, &out, mime, &mut fail);
+    if mime.starts_with("video/") || mime.starts_with("audio/") {
+        for m in ilst_problems(&out) {
+            fail(m);
+        }
+    }
     containers(input, &out, &before, &mut fail);
     Some(out)
+}
+
+/// Android's MP4 extractor rejects the whole file, dates and duration
+/// included, when an `ilst` holds two items of the same type (two `free`
+/// atoms, say). Checked on a Pixel 7 Pro and a Pixel 10 Pro XL.
+pub fn ilst_problems(b: &[u8]) -> Vec<String> {
+    fn walk(d: &[u8], start: usize, end: usize, in_ilst: bool, out: &mut Vec<String>) {
+        let mut seen = Vec::new();
+        let mut i = start;
+        while i + 8 <= end {
+            let size = u32::from_be_bytes(d[i..i + 4].try_into().unwrap()) as usize;
+            let kind: [u8; 4] = d[i + 4..i + 8].try_into().unwrap();
+            if size < 8 || i + size > end {
+                return;
+            }
+            if in_ilst {
+                if seen.contains(&kind) {
+                    out.push(format!(
+                        "ilst has two {:?} items",
+                        String::from_utf8_lossy(&kind)
+                    ));
+                }
+                seen.push(kind);
+            }
+            match &kind {
+                b"moov" | b"trak" | b"mdia" | b"udta" => walk(d, i + 8, i + size, false, out),
+                b"ilst" => walk(d, i + 8, i + size, true, out),
+                b"meta" => {
+                    let full = d.get(i + 12..i + 16) != Some(b"hdlr");
+                    walk(d, i + if full { 12 } else { 8 }, i + size, false, out)
+                }
+                _ => {}
+            }
+            i += size;
+        }
+    }
+    let mut out = Vec::new();
+    walk(b, 0, b.len(), false, &mut out);
+    out
 }
 
 fn pixels(label: &str, input: &[u8], out: &[u8], mime: &str, fail: &mut impl FnMut(String)) {

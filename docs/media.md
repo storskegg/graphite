@@ -94,7 +94,7 @@ but what display needs** zeroes it, so the same applies to videos.
 | PNG | `eXIf`, `tEXt`, `zTXt`, `iTXt` (XMP) chunks |
 | WebP | `EXIF` and `XMP ` chunks (VP8X flags updated) |
 | GIF | Comment and XMP application extensions |
-| MP4, MOV, 3GP, M4A | Location (`©xyz`, `loci`, `com.apple.quicktime.location.*`) and make, model and software atoms. Each removed atom becomes a `free` atom of the same size, so no offsets move. **Remove all but what display needs** also zeroes the `mvhd`, `tkhd` and `mdhd` creation and modification times |
+| MP4, MOV, 3GP, M4A | Location (`©xyz`, `loci`, `com.apple.quicktime.location.*`) and make, model and software atoms. Each removed atom becomes a `free` atom of the same size, so no offsets move. Removed `ilst` items are the exception: the kept items move up and one `free` atom follows the `ilst`, because Android's parser rejects a file whose `ilst` holds two items of the same type, two `free` atoms included, and the video then gets no `DATE_TAKEN`. **Remove all but what display needs** also zeroes the `mvhd`, `tkhd` and `mdhd` creation and modification times |
 
 Documents (PDF, Office), other audio and anything else are copied unchanged in
 every choice. Author fields in documents may be added later.

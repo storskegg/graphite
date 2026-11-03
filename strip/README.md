@@ -33,7 +33,7 @@ are skipped.
   rewrite without leaving metadata or losing data). The stripper never
   falls back to returning the input.
 - `applies_to(mime)`: whether a type is a photo or video, RAW included.
-- `STRIPPER_VERSION` (now 1) goes in the manifest. Bump it whenever any
+- `STRIPPER_VERSION` (now 2) goes in the manifest. Bump it whenever any
   output changes.
 
 The file's signature decides its format; `mime` is used only when the
@@ -68,7 +68,7 @@ model).
 | PNG | Rewrites `eXIf` (filtered) and the XMP `iTXt` with new CRCs. Drops `tEXt`, `zTXt`, other `iTXt`, unknown ancillary chunks and data after IEND. Keeps `tIME` in the middle choice only |
 | WebP | Filters `EXIF` and `XMP `, drops unknown chunks, and updates the VP8X EXIF/XMP flags and the RIFF size |
 | GIF | Drops comments, the XMP application extension, unknown extensions and data after the trailer. Keeps frames, graphic control, plain text, NETSCAPE2.0/ANIMEXTS1.0 looping and ICCRGBG1012 |
-| MP4, MOV, 3GP, M4A | Turns each removed atom into a `free` atom of the same size with its contents zeroed. Middle choice: `©xyz`, `loci`, `©mak`, `©mod`, `©swr`, `©too`, `©enc`, `manu`, `modl`, `auth`, `©aut`, XMP (`XMP_`, XMP `uuid`, `xml `), and the `mdta` items for location, make, model, software, encoder, manufacturer, `com.android.version` and Apple camera/content identifiers. Strictest: every `udta` and `ilst` item except `com.android.capture.fps` and `com.android.video.temporal_layers_count`, and zeroes the `mvhd`, `tkhd` and `mdhd` creation and modification times |
+| MP4, MOV, 3GP, M4A | Turns each removed atom into a `free` atom of the same size with its contents zeroed. In an `ilst`, the kept items move up and one `free` atom after the `ilst` takes the space of the removed ones: Android rejects the whole file (date, duration and all) when an `ilst` holds two items of the same type, such as two `free` atoms. Middle choice: `©xyz`, `loci`, `©mak`, `©mod`, `©swr`, `©too`, `©enc`, `manu`, `modl`, `auth`, `©aut`, XMP (`XMP_`, XMP `uuid`, `xml `), and the `mdta` items for location, make, model, software, encoder, manufacturer, `com.android.version` and Apple camera/content identifiers. Strictest: every `udta` and `ilst` item except `com.android.capture.fps` and `com.android.video.temporal_layers_count`, and zeroes the `mvhd`, `tkhd` and `mdhd` creation and modification times |
 
 ## Crates
 

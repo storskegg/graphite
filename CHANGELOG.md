@@ -31,3 +31,11 @@ releases yet.
 - `android/`: setup over the cable. The new phone installs graphite on the old
   one with its own adb client when the old phone has USB debugging on.
 - `core-ffi/`: wraps `strip/` (memory-mapped files, both hashes on open).
+
+### Fixed
+
+- `strip/`: stripped videos and M4A files kept their `mvhd` date, but Android
+  could not read them at all, so they got no `DATE_TAKEN` (nor duration).
+  Removed `ilst` items each became a `free` atom, and Android's parser rejects
+  an `ilst` with two items of the same type. They now share one `free` atom
+  after the `ilst`. `STRIPPER_VERSION` is 2.

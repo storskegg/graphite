@@ -5,7 +5,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{CHOICES, check, mime_for, tags};
+use common::{CHOICES, check, ilst_problems, mime_for, tags};
 use graphite_strip::{Choice, Unstrippable, applies_to, strip};
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -173,6 +173,32 @@ fn mp4() {
             .map(String::as_str),
         Some("30")
     );
+}
+
+/// Android gave stripped videos no date (nor duration): its extractor
+/// rejected an `ilst` holding several `free` atoms. The kept items now come
+/// first and one `free` atom after the `ilst` takes the space of the rest.
+#[test]
+fn stripped_video_stays_readable_by_android() {
+    for name in ["video.mp4", "video.mov", "video.3gp", "audio.m4a"] {
+        let input = fixture(name);
+        assert!(ilst_problems(&input).is_empty(), "{name}");
+        for choice in CHOICES {
+            let out = strip(&input, mime_for(Path::new(name)), choice)
+                .unwrap()
+                .to_vec();
+            assert_eq!(out.len(), input.len(), "{name} {choice:?}");
+            let p = ilst_problems(&out);
+            assert!(p.is_empty(), "{name} {choice:?}: {p:?}");
+        }
+    }
+    // The check itself: two items of one type are flagged.
+    let mut twice = fixture("video.mp4");
+    let ilst = twice.windows(4).position(|w| w == b"ilst").unwrap() + 4;
+    let first = u32::from_be_bytes(twice[ilst..ilst + 4].try_into().unwrap()) as usize;
+    twice[ilst + 4..ilst + 8].copy_from_slice(b"free");
+    twice[ilst + first + 4..ilst + first + 8].copy_from_slice(b"free");
+    assert!(!ilst_problems(&twice).is_empty());
 }
 
 #[test]

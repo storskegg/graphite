@@ -28,7 +28,7 @@ pub use out::{Part, Stripped};
 
 /// Goes in the manifest next to each sent hash. Bump it whenever the output
 /// for any input and choice changes.
-pub const STRIPPER_VERSION: u32 = 1;
+pub const STRIPPER_VERSION: u32 = 2;
 
 /// What the user chose to do with metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -1,6 +1,7 @@
 //! MP4, MOV, 3GP and M4A. Every change keeps the file's size and layout: a
 //! removed atom becomes a `free` atom of the same size with its contents
-//! zeroed, and times are zeroed in place, so no chunk offset moves.
+//! zeroed (removed `ilst` items share one, after the `ilst`), and times are
+//! zeroed in place, so no chunk offset moves.
 
 use std::ops::Range;
 
@@ -114,8 +115,12 @@ fn meta(d: &[u8], parent: &BoxRef, strip: Strip, p: &mut Patches) -> Result<(), 
         match &b.kind {
             b"hdlr" | b"keys" | b"free" | b"skip" => {}
             b"ilst" => {
-                for item in bmff::children(d, b.body, b.end)? {
-                    let drop = if handler == b"mdta" {
+                let items = bmff::children(d, b.body, b.end)?;
+                let drop = |item: &BoxRef| {
+                    if matches!(&item.kind, b"free" | b"skip") {
+                        return true;
+                    }
+                    if handler == b"mdta" {
                         let index = u32::from_be_bytes(item.kind) as usize;
                         match index.checked_sub(1).and_then(|i| keys.get(i)) {
                             Some(key) => policy::video_key(strip, key),
@@ -124,11 +129,9 @@ fn meta(d: &[u8], parent: &BoxRef, strip: Strip, p: &mut Patches) -> Result<(), 
                         }
                     } else {
                         policy::video_atom(strip, &item.kind)
-                    };
-                    if drop && &item.kind != b"free" {
-                        free(&item, p);
                     }
-                }
+                };
+                compact_ilst(d, b, &items, drop, p)?;
             }
             b"uuid" if is_xmp_uuid(d, b) => free(b, p),
             b"XMP_" | b"xml " => free(b, p),
@@ -152,6 +155,46 @@ fn keys(d: &[u8], k: &BoxRef) -> Result<Vec<String>, String> {
         i += size;
     }
     Ok(out)
+}
+
+/// Rewrites `ilst` with the items `drop` rejects taken out and the kept ones
+/// moved up, byte for byte, and puts one `free` atom after it, so the `meta`
+/// keeps its size. Android's extractor rejects the whole file when an `ilst`
+/// holds two items of the same type, which per-item `free` atoms would be.
+fn compact_ilst(
+    d: &[u8],
+    ilst: &BoxRef,
+    items: &[BoxRef],
+    drop: impl Fn(&BoxRef) -> bool,
+    p: &mut Patches,
+) -> Result<(), String> {
+    if !items.iter().any(&drop) {
+        return Ok(());
+    }
+    let header = ilst.body - ilst.start;
+    let mut kept = Vec::new();
+    for item in items.iter().filter(|i| !drop(i)) {
+        kept.extend_from_slice(&d[item.start..item.end]);
+    }
+    let size = header + kept.len();
+    let mut new = Vec::with_capacity(ilst.end - ilst.start);
+    if header == 16 {
+        new.extend_from_slice(&1u32.to_be_bytes());
+        new.extend_from_slice(b"ilst");
+        new.extend_from_slice(&(size as u64).to_be_bytes());
+    } else {
+        new.extend_from_slice(&(size as u32).to_be_bytes());
+        new.extend_from_slice(b"ilst");
+    }
+    new.extend_from_slice(&kept);
+    // What follows the last item (a QuickTime zero terminator, say) is
+    // removed too; at least one dropped item means at least 8 bytes.
+    let rest = u32::try_from(ilst.end - ilst.start - size).map_err(|_| "ilst too large")?;
+    new.extend_from_slice(&rest.to_be_bytes());
+    new.extend_from_slice(b"free");
+    new.resize(ilst.end - ilst.start, 0);
+    p.push((ilst.start, new));
+    Ok(())
 }
 
 /// Turns `b` into a `free` atom of the same size (a 64-bit size stays as it
