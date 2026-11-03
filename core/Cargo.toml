@@ -1,0 +1,24 @@
+[package]
+name = "graphite-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "graphite's crypto core: pairing, session keys, chunked streaming AEAD, signed manifests"
+repository = "https://github.com/storskegg/graphite"
+publish = false
+
+[dependencies]
+blake3 = { version = "1.8.7", features = ["zeroize"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+getrandom = "0.4.3"
+hpke-rs = { version = "0.8.0", default-features = false, features = ["std", "libcrux", "draft-ietf-hpke-pq"] }
+hpke-rs-crypto = "0.8.0"
+libcrux-ml-dsa = { version = "0.0.11", default-features = false, features = ["std", "mldsa65"] }
+subtle = "2.6.1"
+zeroize = { version = "1.9.1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+# hazmat exposes private key bytes, for comparing against the test vectors.
+hpke-rs = { version = "0.8.0", default-features = false, features = ["std", "libcrux", "draft-ietf-hpke-pq", "hazmat"] }
