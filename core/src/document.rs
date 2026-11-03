@@ -52,6 +52,8 @@ pub enum PlanStatus {
     Present = 1,
     /// Held, but only in the target's trash: not copied.
     PresentInTrash = 2,
+    /// Not held, but the user unticked it in preflight: not sent.
+    Unticked = 3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +72,7 @@ pub struct PlanTotals {
     pub to_copy: u64,
     pub present: u64,
     pub present_in_trash: u64,
+    pub unticked: u64,
 }
 
 /// The target's plan, signed after comparison and preflight; the source
@@ -145,6 +148,7 @@ pub fn plan_totals(manifest: &Manifest, entries: &[PlanEntry]) -> PlanTotals {
             }
             PlanStatus::Present => totals.present += 1,
             PlanStatus::PresentInTrash => totals.present_in_trash += 1,
+            PlanStatus::Unticked => totals.unticked += 1,
         }
     }
     totals
@@ -254,6 +258,21 @@ impl Manifest {
 }
 
 impl Plan {
+    /// Source, during the copy: whether the target may request manifest
+    /// entry `index`. Only entries to copy may be sent; unticked, present
+    /// and unknown entries are refused.
+    pub fn check_request(&self, index: u32) -> Result<(), Error> {
+        if self
+            .entries
+            .iter()
+            .any(|e| e.index == index && e.status == PlanStatus::ToCopy)
+        {
+            Ok(())
+        } else {
+            Err(Error::NotInPlan)
+        }
+    }
+
     /// The rules, against the manifest the plan answers.
     pub(crate) fn validate(&self, manifest: &Manifest) -> Result<(), Error> {
         if each_entry_once(manifest.files.len(), self.entries.iter().map(|e| e.index))
@@ -275,7 +294,8 @@ impl Plan {
         w.u64(t.bytes_to_copy)
             .u64(t.to_copy)
             .u64(t.present)
-            .u64(t.present_in_trash);
+            .u64(t.present_in_trash)
+            .u64(t.unticked);
         w.finish()
     }
 
@@ -291,6 +311,7 @@ impl Plan {
                     0 => PlanStatus::ToCopy,
                     1 => PlanStatus::Present,
                     2 => PlanStatus::PresentInTrash,
+                    3 => PlanStatus::Unticked,
                     _ => return Err(Error::Malformed),
                 },
             });
@@ -300,6 +321,7 @@ impl Plan {
             to_copy: r.u64()?,
             present: r.u64()?,
             present_in_trash: r.u64()?,
+            unticked: r.u64()?,
         };
         r.end()?;
         Ok(Plan {
@@ -324,9 +346,23 @@ impl NotCopiedReason {
 }
 
 impl Receipt {
-    /// The rules, against the manifest the receipt answers.
-    pub(crate) fn validate(&self, manifest: &Manifest) -> Result<(), Error> {
-        if each_entry_once(manifest.files.len(), self.entries.iter().map(|e| e.index)) {
+    /// The rules, against the manifest the receipt answers and the plan it
+    /// follows (already checked against that manifest): every entry once,
+    /// and an entry is not copied as unticked exactly when the plan has it
+    /// unticked.
+    pub(crate) fn validate(&self, manifest: &Manifest, plan: &Plan) -> Result<(), Error> {
+        if !each_entry_once(manifest.files.len(), self.entries.iter().map(|e| e.index)) {
+            return Err(Error::InvalidReceipt);
+        }
+        let mut unticked = vec![false; manifest.files.len()];
+        for e in &plan.entries {
+            unticked[e.index as usize] = e.status == PlanStatus::Unticked;
+        }
+        let agrees = self.entries.iter().all(|e| {
+            let receipt_unticked = e.status == ReceiptStatus::NotCopied(NotCopiedReason::Unticked);
+            receipt_unticked == unticked[e.index as usize]
+        });
+        if agrees {
             Ok(())
         } else {
             Err(Error::InvalidReceipt)

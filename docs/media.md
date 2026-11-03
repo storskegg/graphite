@@ -172,13 +172,15 @@ sent inside the encrypted channel.
 2. **Target hashes the candidates**, using its hash cache (below), and compares
    each against both hashes.
 3. **Each manifest entry gets a status:** *to copy* (held under neither hash, one
-   per sent hash), *present* (held, not in trash) or *present in trash*.
+   per sent hash), *present* (held, not in trash) or *present in trash*. In
+   preflight the user can untick entries *to copy*; they become *unticked*.
 
 ### 3. Preflight
 
 Before anything is copied, the target checks, and both phones show the result:
 
-- **Storage.** Bytes needed is the sum of the sent sizes of everything *to copy*.
+- **Storage.** Bytes needed is the sum of the sent sizes of everything *to copy*,
+  each sent hash counted once (same bytes at two paths are copied once).
   It must fit within `StorageManager.getAllocatableBytes` on the target (which
   already leaves Android's own reserve) with 1 GiB to spare. If it does not, the
   plan shows sizes by category and folder and the user unticks until it fits. The
@@ -195,8 +197,13 @@ Before anything is copied, the target checks, and both phones show the result:
   about here, once per group.
 - **Time.** An estimate from the link speed measured during pairing.
 
-The **plan** lists every entry with its status and the bytes involved. The target
-signs it; the source checks the signature and that it answers this manifest. Both
+The **plan** lists every entry with its status (*to copy*, *present*, *present in
+trash* or *unticked*) and totals: bytes to copy, counted once per sent hash, and
+the count for each status. Unticking happens before the target signs, so the plan
+is the agreed contract for what the source sends: the source checks the
+signature and that the plan answers this manifest, and during the copy refuses a
+request for anything the plan does not have *to copy*. The receipt reports an
+entry as not copied because unticked exactly when the plan has it *unticked*. Both
 phones show the same summary: "1,204 to copy (38.2 GB), 3,511 already on the new
 phone, 2 in the new phone's trash (not copied), about 6 minutes". The user starts
 the copy on the target.

@@ -166,7 +166,8 @@ impl Session {
             &plan_hash(signed_plan),
             Error::PlanMismatch,
         )?;
-        receipt.validate(&manifest)?;
+        plan.validate(&manifest)?;
+        receipt.validate(&manifest, &plan)?;
         self.sign(RECEIPT_CONTEXT, receipt.encode())
     }
 
@@ -192,7 +193,14 @@ impl Session {
             &plan_hash(signed_plan),
             Error::PlanMismatch,
         )?;
-        receipt.validate(&manifest)?;
+        let plan = Plan::decode(self.verify(PLAN_CONTEXT, signed_plan)?)?;
+        same(
+            &plan.manifest_hash,
+            &manifest_hash(signed_manifest),
+            Error::ManifestMismatch,
+        )?;
+        plan.validate(&manifest)?;
+        receipt.validate(&manifest, &plan)?;
         Ok(receipt)
     }
 }
@@ -221,8 +229,8 @@ mod tests {
 
     use super::*;
     use crate::document::{
-        FileDigest, ManifestEntry, MetadataChoice, PlanEntry, PlanStatus, ReceiptEntry,
-        ReceiptStatus, plan_totals,
+        FileDigest, ManifestEntry, MetadataChoice, NotCopiedReason, PlanEntry, PlanStatus,
+        ReceiptEntry, ReceiptStatus, plan_totals,
     };
     use crate::{Method, SourcePairing, TargetPairing};
 
@@ -306,6 +314,21 @@ mod tests {
             }],
         };
         let signed = target.sign(RECEIPT_CONTEXT, missing.encode()).unwrap();
+        assert_eq!(
+            source.verify_receipt(&signed, &signed_manifest, &signed_plan),
+            Err(Error::InvalidReceipt)
+        );
+
+        // Every entry present, but entry 0, which the plan has to copy, is
+        // reported as unticked.
+        let mut contradicts = missing;
+        contradicts.entries[0].status = ReceiptStatus::NotCopied(NotCopiedReason::Unticked);
+        contradicts.entries.push(ReceiptEntry {
+            index: 1,
+            status: ReceiptStatus::PresentVerified,
+            note: String::new(),
+        });
+        let signed = target.sign(RECEIPT_CONTEXT, contradicts.encode()).unwrap();
         assert_eq!(
             source.verify_receipt(&signed, &signed_manifest, &signed_plan),
             Err(Error::InvalidReceipt)

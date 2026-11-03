@@ -143,6 +143,7 @@ fn plan_signed_by_the_target_verifies_at_the_source() {
             to_copy: 2,
             present: 1,
             present_in_trash: 0,
+            unticked: 0,
         }
     );
 }
@@ -171,7 +172,6 @@ fn every_receipt_status_round_trips() {
         ReceiptStatus::NotCopied(NotCopiedReason::DidNotFit),
         ReceiptStatus::NotCopied(NotCopiedReason::MetadataNotRemovable),
         ReceiptStatus::NotCopied(NotCopiedReason::Failed),
-        ReceiptStatus::NotCopied(NotCopiedReason::Unticked),
     ];
     for status in statuses {
         let mut r = receipt(&t.manifest, &t.plan);
@@ -188,6 +188,7 @@ fn every_receipt_status_round_trips() {
         PlanStatus::ToCopy,
         PlanStatus::Present,
         PlanStatus::PresentInTrash,
+        PlanStatus::Unticked,
     ] {
         let mut entries = plan_entries();
         entries[1].status = status;
@@ -253,11 +254,12 @@ fn plan_with_a_missing_duplicated_or_unknown_entry_is_rejected() {
 #[test]
 fn plan_with_wrong_totals_is_rejected() {
     let t = transfer();
-    let changes: [fn(&mut PlanTotals); 4] = [
+    let changes: [fn(&mut PlanTotals); 5] = [
         |x| x.bytes_to_copy += 1,
         |x| x.to_copy -= 1,
         |x| x.present += 1,
         |x| x.present_in_trash += 1,
+        |x| x.unticked += 1,
     ];
     for (i, change) in changes.iter().enumerate() {
         let mut p = plan(&t.manifest);
@@ -464,4 +466,100 @@ fn keeping_metadata_means_sent_equals_original() {
         f.sent = f.original;
     }
     assert!(source.sign_manifest(&m).is_ok());
+}
+
+/// The second copy of the duplicate is unticked: a plan and its receipt.
+fn unticked_transfer() -> (Transfer, Receipt) {
+    let (source, target) = pair(Method::Nfc);
+    let manifest = source.sign_manifest(&manifest3()).unwrap();
+    let mut entries = plan_entries();
+    entries[0].status = PlanStatus::Unticked;
+    let p = Plan {
+        manifest_hash: manifest_hash(&manifest),
+        totals: plan_totals(&manifest3(), &entries),
+        entries,
+    };
+    let plan = target.sign_plan(&p, &manifest).unwrap();
+    let mut r = receipt(&manifest, &plan);
+    r.entries[0].status = ReceiptStatus::NotCopied(NotCopiedReason::Unticked);
+    let t = Transfer {
+        source,
+        target,
+        manifest,
+        plan,
+    };
+    (t, r)
+}
+
+#[test]
+fn unticked_entries_are_in_the_plan_and_its_totals() {
+    let (t, r) = unticked_transfer();
+    let plan = t.source.verify_plan(&t.plan, &t.manifest).unwrap();
+    // Entry 0 is unticked; entry 2 has the same sent bytes and is still copied.
+    assert_eq!(
+        plan.totals,
+        PlanTotals {
+            bytes_to_copy: b"jpeg without gps".len() as u64,
+            to_copy: 1,
+            present: 1,
+            present_in_trash: 0,
+            unticked: 1,
+        }
+    );
+    let signed = t.target.sign_receipt(&r, &t.manifest, &t.plan).unwrap();
+    assert_eq!(
+        t.source
+            .verify_receipt(&signed, &t.manifest, &t.plan)
+            .unwrap(),
+        r
+    );
+}
+
+#[test]
+fn unticked_bytes_are_not_counted() {
+    let mut entries = plan_entries();
+    entries[0].status = PlanStatus::Unticked;
+    entries[2].status = PlanStatus::Unticked;
+    assert_eq!(plan_totals(&manifest3(), &entries).bytes_to_copy, 0);
+}
+
+#[test]
+fn receipt_must_agree_with_the_plan_on_unticked_entries() {
+    // Unticked in the plan, but the receipt says it was copied, or present,
+    // or not copied for another reason.
+    let (t, good) = unticked_transfer();
+    for status in [
+        ReceiptStatus::CopiedVerified,
+        ReceiptStatus::PresentVerified,
+        ReceiptStatus::PresentInTrash,
+        ReceiptStatus::NotCopied(NotCopiedReason::Failed),
+    ] {
+        let mut r = good.clone();
+        r.entries[0].status = status;
+        assert_eq!(
+            t.target.sign_receipt(&r, &t.manifest, &t.plan),
+            Err(Error::InvalidReceipt),
+            "{status:?}"
+        );
+    }
+
+    // Unticked in the receipt, but the plan had it to copy.
+    let t = transfer();
+    let mut r = receipt(&t.manifest, &t.plan);
+    r.entries[0].status = ReceiptStatus::NotCopied(NotCopiedReason::Unticked);
+    assert_eq!(
+        t.target.sign_receipt(&r, &t.manifest, &t.plan),
+        Err(Error::InvalidReceipt)
+    );
+}
+
+#[test]
+fn source_sends_only_what_the_plan_asks_for() {
+    let (t, _) = unticked_transfer();
+    let plan = t.source.verify_plan(&t.plan, &t.manifest).unwrap();
+    assert_eq!(plan.check_request(2), Ok(()));
+    // Unticked, present, and not in the manifest at all.
+    assert_eq!(plan.check_request(0), Err(Error::NotInPlan));
+    assert_eq!(plan.check_request(1), Err(Error::NotInPlan));
+    assert_eq!(plan.check_request(3), Err(Error::NotInPlan));
 }

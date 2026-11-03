@@ -53,6 +53,8 @@ pub enum Error {
     ManifestMismatch,
     /// The receipt follows a different plan.
     PlanMismatch,
+    /// The target requested an entry the plan does not have it copy.
+    NotInPlan,
 }
 
 impl fmt::Display for Error {

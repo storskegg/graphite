@@ -28,7 +28,9 @@ For Android, `blake3` compiles C for NEON, so point `cc` at the NDK, for example
 - `Session`: `seal(chunk, last)` / `open(chunk)` / `finish_receiving()` for the
   stream; `sign_manifest` / `verify_manifest` (source signs, target verifies);
   `sign_plan` / `verify_plan` and `sign_receipt` / `verify_receipt` (target
-  signs, source verifies). `plan_totals` computes a plan's totals.
+  signs, source verifies). `plan_totals` computes a plan's totals;
+  `Plan::check_request(index)` is the source's check, during the copy, that
+  the target asks only for entries the plan has to copy.
 - `FileHasher`: streaming BLAKE3.
 
 Every error is final for the pairing or stream that raised it.
@@ -76,7 +78,9 @@ and share.
   plan. Plan and receipt name every manifest entry exactly once, by index. A
   plan's totals must add up: counts per status, and bytes to copy as the sum
   of the sent sizes of the entries to copy, each sent hash counted once (same
-  bytes at two paths are copied once). Signing checks the same rules as
+  bytes at two paths are copied once). Plan statuses are to copy, present,
+  present in trash and unticked. A receipt entry is not copied as unticked
+  exactly when the plan has it unticked. Signing checks the same rules as
   verifying, and the target re-verifies the manifest before signing a plan or
   receipt for it. Paths must be relative with no `.`, `..` or empty
   components; under **Keep all metadata** sent and original must be the same.
@@ -113,7 +117,9 @@ Our own tests only (no official vectors exist for these):
 - Manifest, plan and receipt signing: round trips (every plan and receipt
   status), any changed byte, another session's signature, each role signing
   and verifying only its own documents, domain separation among all three
-  (plan presented as receipt and the reverse), a plan or receipt for another
+  (plan presented as receipt and the reverse), receipt and plan disagreeing
+  about unticked entries in either direction, requests for entries the plan
+  does not have to copy, a plan or receipt for another
   manifest, a receipt for another plan, missing, duplicated or unknown
   entries, wrong totals, a validly signed but invalid plan or receipt refused
   by the source, unsafe paths.
