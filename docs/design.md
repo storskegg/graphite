@@ -2,7 +2,7 @@
 
 ## Goal
 
-Copy everything an app can reach on a stock Android phone (the **source**) to a
+Copy everything an app can reach on an Android 11 or newer phone (the **source**) to a
 GrapheneOS phone (the **target**), with nothing readable or alterable in transit or
 at rest anywhere in between, and without duplicating anything already on the target.
 Where something cannot be copied, say so and guide the user through its own export.
@@ -11,8 +11,50 @@ First devices: Pixel 7 Pro (stock Android 17) to Pixel 10 Pro XL (GrapheneOS).
 
 ## Roles
 
-One APK. On launch the user picks **This is my old phone** (source) or
-**This is my new phone** (target).
+One APK, `minSdk` 30. The app works out its role itself; the user is never asked.
+
+- **Target: GrapheneOS only**, any release GrapheneOS currently supports.
+- **Source: any Android 11 (API 30) or newer that is not GrapheneOS.** Android 11
+  is the floor because it introduced the all-files access the media step relies on;
+  older phones would need a second, legacy storage path. GrapheneOS to GrapheneOS
+  is out of scope: Seedvault covers it.
+
+### How each phone knows what it is
+
+A phone checks itself with Android key attestation, not with build strings or
+installed packages, which a modified OS can fake. The app creates a Keystore key
+with an attestation challenge, and the secure hardware signs the boot state into
+its certificate chain: the verified-boot key, whether the bootloader is locked,
+and the OS version and patch level.
+
+- If the verified-boot key is one of GrapheneOS's published fingerprints for that
+  device model (the ones its Auditor app uses), the phone is a target.
+- Otherwise it is a source, provided it runs API 30 or newer.
+
+The app ships the list of GrapheneOS fingerprints, so a newly supported device needs
+an app update. On a GrapheneOS phone missing from the list, the app says so and
+stops instead of guessing.
+
+### How the source checks the target
+
+After pairing, the source sends a challenge bound to the session (from the
+transcript hash). The target answers with a fresh attestation chain for that
+challenge. The source checks:
+
+- the chain up to Google's hardware attestation root, against the revocation list;
+- the challenge matches this session;
+- the verified-boot key is a published GrapheneOS key for the device model;
+- the bootloader is locked and the boot state is verified with that key;
+- the patch level, against a minimum the app ships (a warning, not a refusal).
+
+If any check fails, the source sends nothing, and both phones say why (for example
+"the new phone's bootloader is unlocked"). The result is recorded in the capability
+inventory. The target does not need the same proof from the source: the source's
+own check and its reported API level are enough, because only the target receives
+data.
+
+Two phones that come out as the same role (two targets, or two sources) are told so
+right after pairing, and the app stops.
 
 ## Transports
 
@@ -122,6 +164,8 @@ Afterwards the target asks the user to accept the named source before anything f
 
 Right after pairing, inside the encrypted channel, each phone sends what it can do:
 
+- the device: role, API level, and for the target, the result of the attestation
+  check (see [Roles](#roles));
 - the link: its USB role, the link speed, whether the other phone's adb is reachable;
 - the app's grants: permissions, roles (SMS), all-files access, install source;
 - the data: which categories it can read (source) or write (target), with counts

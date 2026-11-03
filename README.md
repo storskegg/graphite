@@ -1,6 +1,6 @@
 # graphite
 
-Move your data from a stock Android phone to a GrapheneOS phone over a cable,
+Move your data from an Android 11+ phone to a GrapheneOS phone over a cable,
 end-to-end encrypted with post-quantum cryptography, without creating duplicates.
 
 Status: design; the [feasibility spike](docs/spike.md) passed on the first two
@@ -12,7 +12,7 @@ phones. Nothing to install yet.
 
 ## In short
 
-- The same app runs on both phones; you pick "old phone" or "new phone".
+- The same app runs on both phones and works out which is which: the new phone proves it runs GrapheneOS with hardware key attestation; the old phone can be any Android 11 or newer.
 - Phones are joined by a USB-C cable (Android Open Accessory), the new phone as
   USB host: over 110 MB/s with a USB 3 cable. A laptop running adb is the
   fallback. No Wi-Fi.
