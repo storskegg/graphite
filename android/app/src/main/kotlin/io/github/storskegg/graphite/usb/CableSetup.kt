@@ -65,14 +65,13 @@ class CableSetup(private val ctl: Controller, private val conn: Connection) {
     private fun normalModeDevice(): UsbDevice {
         val um = ctl.usbManager
         val deadline = System.currentTimeMillis() + 180_000
-        var asked = false
+        var shown = ""
         while (System.currentTimeMillis() < deadline) {
             um.deviceList.values.firstOrNull { !Usb.isAccessoryMode(it) && Usb.adbInterface(it) != null }?.let { return it }
-            if (!asked) {
-                ctl.show(Screen("Setting up the old phone", "Unplug the cable from either phone and plug it back in. " +
-                    "If nothing happens, check that this new phone controls USB (the USB notification, \"USB controlled by\")."))
-                asked = true
-            }
+            // Replugging often hands USB control to the old phone; then this phone sees no device at all.
+            val text = if (Usb.role(ctl.app) == UsbRole.DEVICE) Connection.SWAP_ON_TARGET
+                else "Unplug the cable from either phone and plug it back in."
+            if (text != shown) { ctl.show(Screen("Setting up the old phone", text)); shown = text }
             Thread.sleep(500)
         }
         throw IOException("the old phone didn't come back with USB debugging after replugging")

@@ -48,7 +48,7 @@ old phone over the cable (needs USB debugging on the old phone, see below).
    and whether to include `Android/media/`.
 6. The old phone lists and hashes its files; the new phone works out what it
    already has, checks space, battery and names, and shows the plan. Untick
-   folders if you like, sign the plan, start the copy.
+   folders if you like, continue, and start the copy.
 7. The new phone verifies everything and signs a receipt; the old phone checks
    it. Then, only if you ask, the old phone moves verified files to its trash.
 
@@ -116,24 +116,53 @@ an M4A, a 48 MB download, a PDF and a text file.
 Verified:
 
 - User authentication on both phones, pairing with the six digits, AOA with
-  the target as host, link speed 74-75 MB/s.
+  the target as host, link speed 74-83 MB/s.
 - Tracer: a 64 MiB encrypted file arrived with a matching BLAKE3 at 61.6 MB/s.
 - "Remove location and identifiers": all 12 entries copied and verified
   (the duplicate copied once), receipt signed on the target and verified on
   the source. GPS, make, model and serial numbers were gone from the copies;
   EXIF dates stayed. Photos kept `DATE_TAKEN`; every file kept its
   modification time.
+- **A second run copies nothing**: three more runs each gave "0 copied, 12
+  already on the new phone (verified)", including the copy of `clip.mov` that
+  MediaStore had renamed (identity is the bytes).
 - An unticked folder is reported as not copied, unticked.
+- **Setup over the cable**: with graphite uninstalled on the Pixel 7 Pro and USB
+  debugging on, the Pixel 10 installed it (about 1.6 s), allowed all-files
+  access and opened it, after a replug into normal mode.
+- **Removal**: from a fresh receipt, after re-authentication, 11 of 12 test
+  files went to the Pixel 7 Pro's trash (`.trash-storage`): photos, videos and
+  audio through Android's trash request, the PDF, text and download through
+  `IS_TRASHED`. Nothing outside the chosen folders was touched.
 
 Found and fixed on device: digests compared by reference (everything looked
 changed on the source); `clip.mov` became `clip.mov.mp4` (MIME type now from
-the extension); unticked folders could not be ticked again; a stray packet on
-the adb endpoint after the switch to accessory mode.
+the extension); unticked folders could not be ticked again; the adb client
+re-read a header after reusing its buffer; Android's trash request refuses
+non-media items; an accepted trash request silently skipped `clip.mov` (a `.mov`
+MediaStore types `video/mp4`) while graphite counted it as trashed. Removal now
+checks each item's `IS_TRASHED` afterwards and trashes approved items Android
+skipped directly; **that fallback is not yet verified on device**.
+
+Replugging the cable for the setup handed USB control back to the old phone
+twice. Apps can't change the USB role (it needs the system permission
+`MANAGE_USB`), so graphite now detects it and names the exact taps ("USB
+controlled by" → "This device" on the new phone); that wording is not yet
+tested by a user.
 
 Known issue: **videos lose `DATE_TAKEN`** with either stripping choice. The
 stripper keeps the `mvhd` times, but Android's scanner gives a stripped MP4 no
 date (checked on both phones with the same file before and after stripping).
 Tracked with `strip/`.
+
+Open question: **does wireless debugging on the old phone break the cable
+install?** The install that worked had two changes at once: the fix for the
+adb client's buffer bug, and wireless debugging turned off on the Pixel 7 Pro.
+Next time the cable install is tested, run it once with wireless adb connected
+to the old phone, using the fixed build. If it fails, graphite should detect
+that and tell the user to turn wireless debugging off; if it passes, the buffer
+bug was the whole cause. Until then, disconnect wireless adb from the old phone
+(`adb disconnect <serial>`) before a cable-install test.
 
 Not verified on device:
 

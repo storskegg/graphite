@@ -271,10 +271,15 @@ asks. Nothing is preselected.
   old phone's still have. Before removal the user is told, with counts: "1,204
   photos on the new phone have had their location removed; removing them here loses
   it for good."
-- **To the trash, not deleted.** Files are moved to the source's trash with
-  `MediaStore.createTrashRequest`, which shows Android's own confirmation once for
-  the batch. They can be restored for 30 days. graphite never deletes permanently;
-  the user empties the trash when they are ready.
+- **To the trash, not deleted.** Photos, videos and audio are moved to the
+  source's trash with `MediaStore.createTrashRequest`, which shows Android's own
+  confirmation once for the batch. That request takes media items only, so
+  documents, downloads and other files are trashed by setting `IS_TRASHED` on
+  their MediaStore row, which all-files access allows; for those, graphite's own
+  "Move to trash" step and the fresh authentication are the confirmation. Either
+  way they can be restored for 30 days. Every file is re-hashed just before.
+  graphite never deletes permanently; the user empties the trash when they are
+  ready.
 - **Only from this session's receipt.** A receipt from an earlier session is not
   enough: the target may have changed since. Running the transfer again gives a
   fresh receipt (nothing to copy, everything *present*), which can then be used for

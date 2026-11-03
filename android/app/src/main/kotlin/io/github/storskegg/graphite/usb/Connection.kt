@@ -157,16 +157,21 @@ class Connection(private val ctl: Controller) {
 
     companion object {
         const val STALL_MS = 20_000L
+        // Apps can't change the USB role (that needs MANAGE_USB, a system permission), so graphite says
+        // exactly what to tap and watches for the change. Replugging the cable often hands control back
+        // to the old phone, and the Settings label can name the wrong phone, so this screen is the judge.
         const val SWAP_ON_TARGET =
-            "The old phone is controlling USB, but the new phone has to. On either phone, open the USB " +
-                "notification (\"Charging connected device via USB\" or \"USB\") and under \"USB controlled by\" " +
-                "choose so that this new phone controls it. graphite waits until the roles really change " +
-                "(1-3 s); the label in Settings can name the wrong phone, so trust this screen."
+            "The old phone has taken control of USB, but this new phone has to control it.\n\n" +
+                "On this new phone: pull down the notifications, tap the USB notification (\"Charging connected " +
+                "device via USB\" or \"USB\"), and under \"USB controlled by\" tap \"This device\". If \"This device\" " +
+                "is already selected, tap \"Connected device\" and then \"This device\" again.\n\n" +
+                "This screen changes within a few seconds once it has worked. The setting's label can be wrong; trust this screen."
         const val SWAP_ON_SOURCE =
-            "This old phone is controlling USB, but the new phone has to. On either phone, open the USB " +
-                "notification (\"Charging connected device via USB\" or \"USB\") and under \"USB controlled by\" " +
-                "choose so that the new phone controls it. graphite waits until the roles really change " +
-                "(1-3 s); the label in Settings can name the wrong phone, so trust this screen. " +
-                "Only the data role moves: the phone that supplies power keeps doing so."
+            "This old phone has taken control of USB, but the new phone has to control it.\n\n" +
+                "On this old phone: pull down the notifications, tap the USB notification, and under \"USB controlled " +
+                "by\" tap \"Connected device\". If it is already selected, tap \"This device\" and then \"Connected " +
+                "device\" again.\n\n" +
+                "This screen changes within a few seconds once it has worked. Only control moves: the phone " +
+                "that supplies power keeps doing so."
     }
 }

@@ -233,9 +233,9 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             val plan = Plan(ByteArray(0), planEntries(statuses), totals)
             val now = ticked()
             val a = ctl.ask(Screen("The plan", summary(plan, inv) + warn + names +
-                "\n\nUntick folders you don't want copied, then sign the plan.",
+                "\n\nUntick folders you don't want copied, then continue.",
                 choices = folders.map { Choice(it, it, checked = it in now) },
-                buttons = listOf("Sign the plan", "Stop")))
+                buttons = listOf("Continue", "Stop")))
             if (a.button == "Stop") { ch.send(Msg.ERROR, BinWriter().str("stopped on the new phone").finish()); return null }
             // A changed selection is shown again with new totals before anything is signed.
             if (a.checked != now) { apply(a.checked); continue }

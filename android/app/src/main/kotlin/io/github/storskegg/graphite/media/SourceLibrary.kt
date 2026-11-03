@@ -108,8 +108,11 @@ object SourceLibrary {
     fun knownMimeFor(name: String): String? =
         MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('/').substringAfterLast('.', "").lowercase())
 
-    /** The MediaStore item for a source file, for the trash request; null when MediaStore doesn't know it. */
-    fun mediaUri(c: Context, f: File): android.net.Uri? {
+    /** A source file's MediaStore item: in its media collection for photos, videos and audio, else in Files. */
+    data class Item(val uri: android.net.Uri, val media: Boolean)
+
+    /** The MediaStore item for a source file, for removal; null when MediaStore doesn't know it. */
+    fun mediaItem(c: Context, f: File): Item? {
         val files = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val cols = arrayOf(MediaColumns._ID, MediaStore.Files.FileColumns.MEDIA_TYPE)
         c.contentResolver.query(files, cols, "${MediaColumns.DATA} = ?", arrayOf(f.path), null)?.use { cur ->
@@ -120,9 +123,9 @@ object SourceLibrary {
                 MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE -> MediaStore.Images.Media.getContentUri(vol)
                 MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaStore.Video.Media.getContentUri(vol)
                 MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO -> MediaStore.Audio.Media.getContentUri(vol)
-                else -> if (f.path.contains("/Download/")) MediaStore.Downloads.getContentUri(vol) else files
+                else -> null
             }
-            return android.content.ContentUris.withAppendedId(collection, id)
+            return Item(android.content.ContentUris.withAppendedId(collection ?: files, id), collection != null)
         }
         return null
     }

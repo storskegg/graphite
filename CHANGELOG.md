@@ -22,3 +22,12 @@ releases yet.
   WebP, GIF and MP4/MOV/3GP/M4A.
 - `core-ffi/` and `android/`: first tracer build. It pairs over the cable and
   sends one encrypted file, end to end.
+- `android/`: the media transfer, phases 1-6 of [docs/media.md](docs/media.md):
+  inventory and metadata choice, signed manifest, comparison by hash with a hash
+  cache, preflight (space, battery, names) and signed plan, copy as pending
+  MediaStore items with modification times restored, verification without the
+  cache and a signed receipt, optional removal to the source's trash. A journal
+  cleans up after interruptions; a second run copies nothing.
+- `android/`: setup over the cable. The new phone installs graphite on the old
+  one with its own adb client when the old phone has USB debugging on.
+- `core-ffi/`: wraps `strip/` (memory-mapped files, both hashes on open).

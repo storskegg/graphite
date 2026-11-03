@@ -107,11 +107,26 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
         // 6. Removal, only if the user asks.
         val removable = receipt.entries.filter { it.status == ReceiptStatus.CopiedVerified || it.status == ReceiptStatus.PresentVerified }
             .map { it.index.toInt() }
-        val a = ctl.ask(Screen("Copy verified", "The new phone signed a receipt and this phone checked it.\n\n$summary.$noteText" +
-            if (removable.isEmpty()) "" else "\n\nYou can now move what was verified to this phone's trash (kept for 30 days). Nothing is preselected.",
-            buttons = if (removable.isEmpty()) listOf("Done") else listOf("Done", "Remove from this phone…")))
-        if (a.button != "Done") Removal(ctl).run(files, manifest, removable)
-        else ctl.ask(Screen("Done", "Nothing was removed from this phone.", buttons = emptyList()))
+        while (true) {
+            val a = ctl.ask(Screen("Copy verified", "The new phone signed a receipt and this phone checked it.\n\n$summary.$noteText" +
+                if (removable.isEmpty()) "" else "\n\nYou can now move what was verified to this phone's trash (kept for 30 days). Nothing is preselected.",
+                buttons = if (removable.isEmpty()) listOf("Done") else listOf(REMOVE, "Done")))
+            if (a.button == REMOVE) { Removal(ctl).run(files, manifest, removable); return }
+            // The receipt is only good for this session: leaving now means another transfer before any removal.
+            if (removable.isNotEmpty()) {
+                val sure = ctl.ask(Screen("Keep everything on this phone?",
+                    "Leave the ${removable.size} verified files on this phone? To remove them later you need to run " +
+                        "another transfer, since removal only uses this session's receipt.",
+                    buttons = listOf("Keep them", "Back")))
+                if (sure.button == "Back") continue
+            }
+            ctl.ask(Screen("Done", "Nothing was removed from this phone.", buttons = emptyList()))
+            return
+        }
+    }
+
+    private companion object {
+        const val REMOVE = "Remove from this phone…"
     }
 
     private fun answerSpeedTest() {
@@ -215,27 +230,51 @@ class Removal(private val ctl: Controller) {
         }
         ctl.requireAuth("moves files to the trash", fresh = true)
         val chosen = removable.filter { Preflight.folder(manifest.files[it].path) in a.checked }
-        val uris = ArrayList<android.net.Uri>()
+        val items = ArrayList<SourceLibrary.Item>()
         var changed = 0
         for ((n, i) in chosen.withIndex()) {
             ctl.show(Screen("Checking", "Re-reading each file before removal…", progress = Progress(n.toLong(), chosen.size.toLong(), "${n + 1} of ${chosen.size}")))
             val f = files[i]
             val same = runCatching { openFile(f.file.path).use { it.original().same(manifest.files[i].original) } }.getOrDefault(false)
-            val uri = if (same) SourceLibrary.mediaUri(ctl.app, f.file) else null
-            if (uri == null) { changed++; log("not removing ${f.path}: changed or unknown to MediaStore"); continue }
-            uris += uri
+            val item = if (same) SourceLibrary.mediaItem(ctl.app, f.file) else null
+            if (item == null) { changed++; log("not removing ${f.path}: changed or unknown to MediaStore"); continue }
+            items += item
         }
-        var trashed = 0
-        for (batch in uris.chunked(BATCH)) {
+        // Android's trash request takes only photos, videos and audio ("All requested items must be Media
+        // items"); it shows Android's own confirmation. Other files (documents, downloads) go to the trash
+        // through IS_TRASHED, which all-files access allows; the user confirmed above and authenticated again.
+        val (media, other) = items.partition { it.media }
+        val declined = HashSet<android.net.Uri>()
+        for (batch in media.map { it.uri }.chunked(BATCH)) {
             val pi = MediaStore.createTrashRequest(ctl.app.contentResolver, batch, true)
-            val activity = MainActivity.current ?: break
-            if (activity.launchForResult(pi.intentSender).get()) trashed += batch.size else break
+            val activity = MainActivity.current
+            if (activity == null || !activity.launchForResult(pi.intentSender).get()) declined += batch
         }
-        log("removal: $trashed moved to the trash, $changed skipped")
+        fun trashDirectly(uri: android.net.Uri) = runCatching {
+            ctl.app.contentResolver.update(uri, android.content.ContentValues().apply { put(MediaStore.MediaColumns.IS_TRASHED, 1) }, null, null)
+        }.onFailure { log("trash $uri: $it") }
+        other.forEach { trashDirectly(it.uri) }
+        // An accepted trash request can still skip an item (a .mov that MediaStore types video/mp4 stayed put
+        // on the Pixel 7 Pro), so each item's IS_TRASHED decides. Skipped items the user approved are trashed
+        // directly; declined ones are left alone.
+        media.filter { it.uri !in declined && !isTrashed(it.uri) }.forEach { log("trash request skipped ${it.uri}"); trashDirectly(it.uri) }
+        val notTrashed = items.filter { it.uri !in declined && !isTrashed(it.uri) }
+        notTrashed.forEach { log("not trashed: ${it.uri}") }
+        val trashed = items.size - notTrashed.size - declined.size
+        val failed = notTrashed.size
+        log("removal: $trashed moved to the trash, $changed skipped, ${declined.size} declined, $failed failed")
         ctl.ask(Screen("Removal finished", "$trashed files moved to this phone's trash (restorable for 30 days)." +
             (if (changed > 0) "\n$changed were not removed because they changed since the copy or MediaStore doesn't list them." else "") +
-            (if (trashed < uris.size) "\n${uris.size - trashed} were not removed: the request was declined." else ""),
+            (if (declined.isNotEmpty()) "\n${declined.size} were not removed: the request was declined." else "") +
+            (if (failed > 0) "\n$failed could not be moved to the trash; they are still on this phone." else ""),
             buttons = emptyList()))
+    }
+
+    private fun isTrashed(uri: android.net.Uri): Boolean {
+        val args = android.os.Bundle().apply { putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE) }
+        return ctl.app.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.IS_TRASHED), args, null)?.use {
+            it.moveToFirst() && it.getInt(0) == 1
+        } ?: false
     }
 
     companion object {
