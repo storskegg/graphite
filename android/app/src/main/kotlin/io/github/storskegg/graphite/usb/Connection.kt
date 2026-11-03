@@ -19,6 +19,10 @@ class Connection(private val ctl: Controller) {
         private set
     private var keeper: Thread? = null
     private var lastSwitch = 0L
+    /** Host: the open accessory pipe, and when it was attached without the link coming up yet. */
+    private var hostPipe: HostPipe? = null
+    @Volatile private var attachedAt = 0L
+    @Volatile private var paused = false
 
     init {
         link.onState = { describe() }
@@ -28,7 +32,8 @@ class Connection(private val ctl: Controller) {
         if (keeper != null) return
         keeper = Thread({
             while (!closed) {
-                if (link.state == Link.State.DOWN) {
+                if (link.state == Link.State.UP) attachedAt = 0L
+                if (link.state == Link.State.DOWN && !paused) {
                     try {
                         tryAttach()
                     } catch (e: Exception) {
@@ -66,6 +71,8 @@ class Connection(private val ctl: Controller) {
                 val (pipe, speed) = Usb.openHostPipe(um, dev)
                 ctl.linkSpeed = speed
                 log("host pipe open on ${Usb.describe(dev)}: $speed")
+                hostPipe = pipe
+                if (attachedAt == 0L) attachedAt = System.currentTimeMillis()
                 link.attach(pipe)
             } else if (System.currentTimeMillis() - lastSwitch > 8000) {
                 lastSwitch = System.currentTimeMillis()
@@ -109,17 +116,47 @@ class Connection(private val ctl: Controller) {
         ctl.updateStatus("USB: $roleText; $state$speed")
     }
 
-    /** Waits for the link, showing what the user has to do meanwhile. */
-    fun awaitUp(show: (String) -> Unit) {
+    /**
+     * Host: the other phone, when it is in accessory mode but graphite hasn't
+     * answered for [STALL_MS] (not installed, or not opened).
+     */
+    private fun stalled(): android.hardware.usb.UsbDevice? {
+        val since = attachedAt
+        if (!isHost || since == 0L || link.state == Link.State.UP || System.currentTimeMillis() - since < STALL_MS) return null
+        return ctl.usbManager.deviceList.values.firstOrNull { Usb.isAccessoryMode(it) }
+    }
+
+    /** Runs [block] with the accessory pipe closed and not reopened, so it can use the device (cable setup). */
+    fun <T> withLinkReleased(block: () -> T): T {
+        paused = true
+        try {
+            hostPipe?.close()
+            hostPipe = null
+            return block()
+        } finally {
+            attachedAt = 0L
+            paused = false
+        }
+    }
+
+    /** Waits for the link, showing what the user has to do meanwhile; [onStalled] runs when the other phone doesn't answer. */
+    fun awaitUp(show: (String) -> Unit, onStalled: (android.hardware.usb.UsbDevice) -> Unit = {}) {
         start()
         var last = ""
         while (!link.awaitUp(500)) {
             if (link.state == Link.State.CLOSED) throw IOException("link closed")
+            stalled()?.let { dev ->
+                onStalled(dev)
+                // Give the other phone time again before asking again.
+                attachedAt = System.currentTimeMillis()
+                last = ""
+            }
             if (guidance != last) { last = guidance; show(guidance) }
         }
     }
 
     companion object {
+        const val STALL_MS = 20_000L
         const val SWAP_ON_TARGET =
             "The old phone is controlling USB, but the new phone has to. On either phone, open the USB " +
                 "notification (\"Charging connected device via USB\" or \"USB\") and under \"USB controlled by\" " +

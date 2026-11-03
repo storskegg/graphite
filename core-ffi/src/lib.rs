@@ -1,4 +1,4 @@
-//! uniffi wrapper around `graphite-core` for the Android app.
+//! uniffi wrapper around `graphite-core` and `graphite-strip` for the Android app.
 //!
 //! Thin on purpose: every type mirrors one in the core, every method forwards
 //! to it. The core's API is unchanged. Objects hold their core value behind a
@@ -7,6 +7,8 @@
 use std::sync::Mutex;
 
 use graphite_core as core;
+
+mod strip;
 
 uniffi::setup_scaffolding!();
 
@@ -278,7 +280,9 @@ impl From<core::MetadataChoice> for MetadataChoice {
     fn from(c: core::MetadataChoice) -> Self {
         match c {
             core::MetadataChoice::KeepAll => Self::KeepAll,
-            core::MetadataChoice::RemoveLocationAndIdentifiers => Self::RemoveLocationAndIdentifiers,
+            core::MetadataChoice::RemoveLocationAndIdentifiers => {
+                Self::RemoveLocationAndIdentifiers
+            }
             core::MetadataChoice::RemoveAllButDisplay => Self::RemoveAllButDisplay,
         }
     }
@@ -644,6 +648,12 @@ impl FileHasher {
     }
 }
 
+impl Default for FileHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// BLAKE3 of `bytes` in one call.
 #[uniffi::export]
 pub fn blake3_hash(bytes: Vec<u8>) -> Vec<u8> {
@@ -691,7 +701,10 @@ mod tests {
             }],
         };
         let signed_manifest = source.sign_manifest(manifest.clone()).unwrap();
-        assert_eq!(target.verify_manifest(signed_manifest.clone()).unwrap(), manifest);
+        assert_eq!(
+            target.verify_manifest(signed_manifest.clone()).unwrap(),
+            manifest
+        );
 
         let entries = vec![PlanEntry {
             index: 0,
@@ -702,7 +715,9 @@ mod tests {
             totals: plan_totals(manifest.clone(), entries.clone()).unwrap(),
             entries,
         };
-        let signed_plan = target.sign_plan(plan.clone(), signed_manifest.clone()).unwrap();
+        let signed_plan = target
+            .sign_plan(plan.clone(), signed_manifest.clone())
+            .unwrap();
         let verified = source
             .verify_plan(signed_plan.clone(), signed_manifest.clone())
             .unwrap();
@@ -719,7 +734,11 @@ mod tests {
             }],
         };
         let signed_receipt = target
-            .sign_receipt(receipt.clone(), signed_manifest.clone(), signed_plan.clone())
+            .sign_receipt(
+                receipt.clone(),
+                signed_manifest.clone(),
+                signed_plan.clone(),
+            )
             .unwrap();
         assert_eq!(
             source
@@ -737,7 +756,10 @@ mod tests {
         assert_eq!(chunk.data, b"hello");
         assert!(chunk.last);
         target.finish_receiving().unwrap();
-        assert_eq!(target.seal(vec![0; 1 << 21], false), Err(CoreError::ChunkTooLarge));
+        assert_eq!(
+            target.seal(vec![0; 1 << 21], false),
+            Err(CoreError::ChunkTooLarge)
+        );
     }
 
     #[test]

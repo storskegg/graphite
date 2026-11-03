@@ -73,10 +73,13 @@ class MainActivity : Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntent(intent)
+        // A finished session starts again when graphite is opened again or the other phone reconnects.
+        controller.start()
     }
 
     private fun handleIntent(i: Intent?) {
         if (i?.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) log("accessory attached (launched by the other phone)")
+        if (controller.debuggable && i?.hasExtra("test_scope") == true) controller.testScope = i.getStringExtra("test_scope")
     }
 
     override fun onStart() {

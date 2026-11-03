@@ -36,6 +36,8 @@ class Controller(val app: Context) {
     val role: RoleResult = UnattestedRoleCheck.check(app)
     val usbManager: UsbManager = app.getSystemService(UsbManager::class.java)
     private val main = Handler(Looper.getMainLooper())
+    // Declared before init, which reads it through updateStatus().
+    private val prefs = app.getSharedPreferences("graphite", Context.MODE_PRIVATE)
 
     @Volatile var screen = Screen("graphite")
         private set
@@ -60,7 +62,7 @@ class Controller(val app: Context) {
 
     fun updateStatus(usb: String? = null) {
         status = Status(
-            role = role.explanation,
+            role = role.explanation + (testScope?.let { "\nTEST SCOPE: only folders named \"$it\"." } ?: ""),
             usb = usb ?: status.usb,
             auth = if (gate.isValid()) "You confirmed it's you." else "Not confirmed: graphite will ask before pairing or touching files.",
         )
@@ -108,6 +110,18 @@ class Controller(val app: Context) {
     }
 
     val isTarget get() = role.role == AppRole.TARGET
+
+    /**
+     * Test builds only: limits the source's scope to folders with this name,
+     * so a test run never reads or copies the user's own files. Set with
+     * `adb shell am start -n io.github.storskegg.graphite/.MainActivity --es test_scope graphite-test`
+     * (an empty value clears it). Ignored unless the app is debuggable.
+     */
+    var testScope: String?
+        get() = if (debuggable) prefs.getString("test_scope", null)?.ifEmpty { null } else null
+        set(v) { prefs.edit().putString("test_scope", v).apply(); updateStatus() }
+
+    val debuggable get() = (app.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     /** Starts the session's flow once; later calls do nothing while it runs. */
     @Synchronized

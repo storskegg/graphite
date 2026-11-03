@@ -11,6 +11,9 @@ import io.github.storskegg.graphite.ffi.Session
 import io.github.storskegg.graphite.ffi.SourcePairing
 import io.github.storskegg.graphite.ffi.TargetPairing
 import io.github.storskegg.graphite.link.LinkResetException
+import io.github.storskegg.graphite.media.Battery
+import io.github.storskegg.graphite.media.SourceMedia
+import io.github.storskegg.graphite.media.TargetMedia
 import io.github.storskegg.graphite.role.AppRole
 import io.github.storskegg.graphite.session.Caps
 import io.github.storskegg.graphite.session.Channel
@@ -21,6 +24,7 @@ import io.github.storskegg.graphite.session.receivePair
 import io.github.storskegg.graphite.session.sendAbort
 import io.github.storskegg.graphite.session.sendPair
 import io.github.storskegg.graphite.ui.Screen
+import io.github.storskegg.graphite.usb.CableSetup
 import io.github.storskegg.graphite.usb.Connection
 import io.github.storskegg.graphite.util.BinReader
 import io.github.storskegg.graphite.util.BinWriter
@@ -44,7 +48,9 @@ class Flows(private val ctl: Controller) {
         ctl.requireAuth("connects to the other phone over the cable")
         val conn = Connection(ctl)
         while (true) {
-            conn.awaitUp { ctl.show(Screen("Connecting", it, progress = io.github.storskegg.graphite.ui.Progress(0, 0, ""))) }
+            conn.awaitUp({ ctl.show(Screen("Connecting", it, progress = io.github.storskegg.graphite.ui.Progress(0, 0, ""))) }) { dev ->
+                CableSetup(ctl, conn).offer(dev)
+            }
             if (conn.link.peerRole == role.wire) {
                 val both = if (role == AppRole.TARGET) "new phones (GrapheneOS)" else "old phones (not GrapheneOS)"
                 conn.close("both phones are $both")
@@ -55,8 +61,8 @@ class Flows(private val ctl: Controller) {
             TransferService.start(ctl.app, "Connected to the other phone")
             try {
                 val paired = if (role == AppRole.TARGET) pairTarget(conn) else pairSource(conn)
-                if (role == AppRole.TARGET) TargetTransfer(ctl, conn, paired).run()
-                else SourceTransfer(ctl, conn, paired).run()
+                if (role == AppRole.TARGET) TargetMedia(ctl, paired).run()
+                else SourceMedia(ctl, paired).run()
                 conn.close("finished")
                 return
             } catch (_: LinkResetException) {
@@ -137,12 +143,7 @@ class Flows(private val ctl: Controller) {
     }
 
     private fun caps(conn: Connection): Caps {
-        val battery = ctl.app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val level = battery?.let {
-            it.getIntExtra(BatteryManager.EXTRA_LEVEL, 0) * 100 / maxOf(1, it.getIntExtra(BatteryManager.EXTRA_SCALE, 100))
-        } ?: 0
-        val charging = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, 0)
-            ?.let { it == BatteryManager.BATTERY_STATUS_CHARGING || it == BatteryManager.BATTERY_STATUS_FULL } ?: false
+        val (level, charging) = battery(ctl.app)
         return Caps(
             role = role!!.wire, sdk = Build.VERSION.SDK_INT, manufacturer = Build.MANUFACTURER, model = Build.MODEL,
             release = Build.VERSION.RELEASE, appVersion = BuildConfigVersion.name(ctl.app),
@@ -163,6 +164,16 @@ class Flows(private val ctl: Controller) {
             if (m.type == Msg.ERROR) throw PeerAbortException(BinReader(m.body).str())
             if (m.type != type) throw IOException("expected message 0x%02x, got 0x%02x".format(type, m.type))
             return m
+        }
+
+        fun battery(c: Context): Battery {
+            val b = c.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val level = b?.let {
+                it.getIntExtra(BatteryManager.EXTRA_LEVEL, 0) * 100 / maxOf(1, it.getIntExtra(BatteryManager.EXTRA_SCALE, 100))
+            } ?: 0
+            // Plugged in counts as charging: the host powers the other phone, and a full phone stops charging.
+            val plugged = (b?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+            return Battery(level, plugged)
         }
 
         fun allocatableBytes(c: Context): Long {

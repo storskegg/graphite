@@ -20,6 +20,8 @@ required-features = ["cli"]
 
 [dependencies]
 graphite-core = { path = "../core" }
+graphite-strip = { path = "../strip" }
+memmap2 = "0.9.12"
 uniffi = "=0.32.2"
 
 [features]

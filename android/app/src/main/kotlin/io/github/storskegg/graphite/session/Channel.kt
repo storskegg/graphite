@@ -48,6 +48,9 @@ class Channel(private val link: Link, private val cipher: ChunkCipher, private v
     val maxSingleChunkBody get() = maxChunk - 5
 
     @Synchronized
+    /** Waits until the other phone has acknowledged everything sent. */
+    fun flush(timeoutMs: Long) = link.flush(timeoutMs)
+
     fun send(type: Int, body: ByteArray, last: Boolean = false) {
         val header = ByteBuffer.allocate(5).order(ByteOrder.LITTLE_ENDIAN).put(type.toByte()).putInt(body.size).array()
         var off = 0
