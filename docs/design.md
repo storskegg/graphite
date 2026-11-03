@@ -226,6 +226,8 @@ Not protected against:
 | Contacts, local calendars | Yes | Later step; account-backed ones resync instead |
 | SMS/MMS | Yes | Target app briefly holds the SMS role, taken and given back with `cmd role` over the adb link (no prompt) or the system dialog; only the role holder can write. Dates, threads and MMS images survive ([spike](spike.md#6-sms-mms-and-call-log-on-the-target)). Incoming MMS is not downloaded while graphite holds the role, so the window is kept to the inserts. RCS cannot be read |
 | Call log | Yes | Hard-restricted permission; needs an adb-style install. On the target the adb shell itself can write it. `last_modified` and `geocoded_location` are rewritten; names come from Contacts |
+| Blocked numbers | Yes | Read and written with the adb shell on both phones (`content://com.android.blockednumber`); no role needed ([spike](spike.md#7-blocked-numbers-and-spam-marks)) |
+| Spam marks | No | Kept privately by Google Phone and Google Messages. Numbers blocked as spam move with the blocked list; spam-blocked calls move with the call log |
 | App APKs | Partly | Store reinstall list preferred; Play Integrity apps may refuse to run |
 | App private data | No | Needs root. Guided per-app exports instead |
 | Saved Wi-Fi passwords | No | Share each network by QR code |

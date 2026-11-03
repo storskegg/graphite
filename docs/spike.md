@@ -13,6 +13,7 @@ Android 17, build 2026102101) on 2026-11-03, with the throwaway app in
 | 4 | Does a `pm install` from the shell lift the SMS and call-log restrictions on Android 17, and skip sideloading verification on stock? | Install both phones from the laptop with `adb install` | **Pass.** Shell installs get `RESTRICTION_INSTALLER_EXEMPT` on both. Verification is not enforced on stock yet, and shell installs opt out of it |
 | 5 | Can the target's MediaStore entries be given the source's `DATE_TAKEN` and modification time? | Accept that sort order may follow EXIF only | **Partly.** Modification time: yes. `DATE_TAKEN`: never written by the app; the scanner derives it from the bytes (EXIF for photos, the MP4 `mvhd` creation time for videos), so identical bytes give the same value. `DATE_ADDED`: cannot be set, not even from the shell |
 | 6 | Can graphite write SMS, MMS and call-log entries on GrapheneOS, and take and give back the SMS role? | No messages or call log | **Pass.** The role moves by dialog or silently by `cmd role` from the shell. SMS and MMS keep their dates and show in order, images included, in Google Messages. The shell alone can write the call log but not SMS |
+| 7 | Can graphite carry over blocked numbers and spam marks? | Blocked numbers stay behind | **Blocked numbers: pass**, read and written by the adb shell on both phones, no role needed. **Spam marks: no**, they live in Google Phone's and Google Messages' private storage |
 
 The laptop was only a monitor: it watched both phones' logs over wireless
 debugging while they were cabled to each other. That was test instrumentation;
@@ -231,6 +232,54 @@ Gotchas:
   from it within a minute.
 - Not checked: whether Google Messages' RCS chat features survived losing the role
   for four minutes. The user should look in Messages, Settings, RCS chats.
+
+## 7. Blocked numbers and spam marks
+
+Tested on 2026-11-03. Only row counts and column names of the user's data were
+looked at, never the numbers themselves.
+
+**Reading on the source (Pixel 7 Pro, stock).** The shell holds
+`READ_BLOCKED_NUMBERS` and `WRITE_BLOCKED_NUMBERS` (on both phones), and
+`content query --uri content://com.android.blockednumber/blocked` returns the whole
+list: 1307 rows on the Pixel 7 Pro, 46 on the Pixel 10. Columns: `_id`,
+`original_number`, `e164_number`. The provider does not allow `count(*)`.
+Reading it from the spike app while it holds the SMS role was **not run**: the
+shell already reads it, so graphite's adb link is enough, and holding the role on
+the source would risk a missed MMS for no gain.
+
+**Writing on the target (Pixel 10, GrapheneOS).** Also from the shell, no SMS role:
+
+- `content insert --bind original_number:s:+15550100` added row 47 (46 to 47 rows);
+  `e164_number` stayed empty for this short fake number.
+- `content call --method is_blocked --arg +15550100` returned `blocked=true`.
+- Google Messages picked it up at once (`BlockListResolver ... 1 newly blocked`)
+  and showed the thread as "Blocked, unblock to receive messages from this sender".
+- The system Blocked numbers screen (the one Dialer and Settings open) listed
+  "+1 5550100".
+- `content delete --where "_id=47 AND original_number='+15550100'"`: back to 46
+  rows, `blocked=false`, no row matches the number.
+
+**Spam marks (Pixel 7 Pro, stock).**
+
+- *Blocked-numbers provider*: holds numbers only, with no reason or source column.
+  "Block and report spam" in Google Phone or Messages blocks the number here as
+  well (Messages logs that it uses the system's blocked list), so those numbers
+  move with the list, but the spam mark does not.
+- *`content://sms`*: the shell sees `_id, thread_id, address, person, date,
+  date_sent, protocol, read, status, type, reply_path_present, subject, body`, and
+  conversations have `archived` but nothing for spam. Messages' spam folder is
+  kept in its own database. Whether its spam-folder messages are still in
+  `content://sms` was not checked (we can't tell which they are without its
+  database).
+- *Call log*: calls blocked by Google Phone's spam filter are readable: 194 calls
+  of type 6 (blocked), 184 with `block_reason=1` (call-screening service,
+  `call_screening_app_name=Phone`) and 10 with `block_reason=3` (blocked number).
+  These move with the call log like any other row.
+- *Google Phone's and Google Messages' own providers*
+  (`com.google.android.dialer.annotatedcalllog`, `...phonelookuphistory`,
+  `com.google.android.apps.messaging.shared.datamodel.BugleContentProvider`): not
+  exported or unimplemented to the shell. Spam reports and the spam verdicts
+  themselves live there and in Google's cloud, so they cannot be carried over.
 
 ## Phones stay awake and unlocked
 
