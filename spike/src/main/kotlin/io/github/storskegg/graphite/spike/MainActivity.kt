@@ -40,6 +40,7 @@ class MainActivity : Activity() {
         "adbinstall" to { AdbProbe(this).run(install = true) },
         "perms" to { requestRestricted() },
         "media" to { MediaTest(this).run() },
+        "video" to { MediaTest(this).videos() },
         "mediaquery" to { MediaTest(this).query() },
     )
 

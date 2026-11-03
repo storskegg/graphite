@@ -81,8 +81,9 @@ taken as on the old phone. **Remove all but what display needs** removes them, s
 the target has no date taken; galleries sort those items by modification time,
 which is still restored from the source. The user is told this under that choice.
 The modification time is file-system data, not part of the file, and is kept in
-all three choices so the gallery order survives. Videos' `DATE_TAKEN` is not
-tested yet.
+all three choices so the gallery order survives. A video's `DATE_TAKEN` comes
+from its `mvhd` creation time only, which the first two choices keep; **Remove all
+but what display needs** zeroes it, so the same applies to videos.
 
 ### Formats
 
@@ -224,9 +225,9 @@ For each file *to copy*:
 
 The publish scan sets `DATE_MODIFIED` from that modification time. The app cannot
 write `DATE_TAKEN`: MediaStore overwrites it at publish and ignores later updates.
-The scanner derives it from the file's EXIF (and from the modification time when
-EXIF has no time-zone offset), so identical bytes plus the restored modification
-time give the same `DATE_TAKEN` as on the source. An item whose source value came
+The scanner derives it from a photo's EXIF (and from the modification time when
+EXIF has no time-zone offset) and from a video's MP4 `mvhd` creation time, so
+identical bytes plus the restored modification time give the same `DATE_TAKEN` as on the source. An item whose source value came
 from the app that saved it, not from its bytes, ends up with none, and galleries
 sort it by modification time. See [spike.md](spike.md#5-mediastore-dates).
 
@@ -289,14 +290,14 @@ manifest carries each file's modification time and MediaStore `DATE_ADDED` and
 | Date | Where it sorts | On the target |
 |---|---|---|
 | Modification time (`mtime`, MediaStore `DATE_MODIFIED`) | File managers; galleries' fallback | **Restored** from the source before publishing (proven in the [spike](spike.md#5-mediastore-dates)) |
-| `DATE_TAKEN` | Galleries | **The same**, because the scanner derives it from the bytes and the restored modification time (see the copy phase above). Not under **Remove all but what display needs**, which removes it on purpose |
-| `DATE_ADDED` | "Recently added" views, some galleries | **Set by MediaStore at insert, read-only to apps.** Two steps keep it right: files are copied in the source's `DATE_ADDED` order, so the relative order survives even if the values do not; and the target then tries to write the source's values through its adb-level shell over the cable (`content update`). Whether MediaProvider accepts that from the shell is not proven yet |
+| `DATE_TAKEN` | Galleries | **The same**, because the scanner derives it from the bytes (EXIF, or a video's `mvhd` creation time) and the restored modification time (see the copy phase above). Not under **Remove all but what display needs**, which removes it on purpose |
+| `DATE_ADDED` | "Recently added" views, some galleries | **Set by MediaProvider at insert; nothing can change it.** Apps cannot, and neither can the shell: MediaProvider drops `date_added` from a shell `content update` or `content insert` ([spike](spike.md#date_added-from-the-shell)). Files are copied in the source's `DATE_ADDED` order, so the relative order survives, at one-second resolution, though the values become the copy time |
 | Access time (`atime`) | Nothing users see | Not restored |
 | Change time and creation time (`ctime`, `btime`) | `ls -c`, `stat` | **Cannot be set** by any app or by the shell; the kernel sets them. Only root could, by changing the clock |
 
-`DATE_ADDED` set through the shell survives rescans, but not MediaProvider rebuilding
-its database (after its data is cleared), which sets it to the time of the rebuild.
-The receipt notes every file whose dates did not come out as on the source.
+The receipt notes every file whose modification time or `DATE_TAKEN` did not come
+out as on the source. It does not list `DATE_ADDED`, which never matches; it says
+once that "recently added" on the new phone shows the transfer date.
 
 ## Idempotence
 

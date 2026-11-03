@@ -52,6 +52,32 @@ class MediaTest(val a: MainActivity) {
         query()
     }
 
+    // Videos: does the scanner take DATE_TAKEN from the mvhd creation time, mvhd modification time, or the file's mtime?
+    // v-dated.mp4: mvhd created 2018-07-08T09:10:11Z; v-nodate.mp4: 0; v-modonly.mp4: only mvhd modified 2016-05-01T10:53:20Z.
+    fun videos() {
+        val video = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        a.log("want: mvhd created 1531041011000 (2018-07-08); restored mtime $modS (2020-01-02)")
+        for ((name, asset, touchFirst) in listOf(
+            Triple("V1-dated", "v-dated.mp4", false), Triple("V2-dated-touch", "v-dated.mp4", true),
+            Triple("V3-nodate", "v-nodate.mp4", false), Triple("V4-nodate-touch", "v-nodate.mp4", true),
+            Triple("V5-modonly-touch", "v-modonly.mp4", true))) {
+            val v = ContentValues().apply {
+                put(MediaColumns.DISPLAY_NAME, "gs-$name-$stamp.mp4")
+                put(MediaColumns.MIME_TYPE, "video/mp4")
+                put(MediaColumns.RELATIVE_PATH, "Movies/graphite-spike")
+                put(MediaColumns.IS_PENDING, 1)
+            }
+            val uri = cr.insert(video, v) ?: continue.also { a.log("$name: insert failed") }
+            cr.openOutputStream(uri)!!.use { o -> a.assets.open(asset).use { it.copyTo(o) } }
+            if (touchFirst) path(uri)?.let { File(it).setLastModified(modS * 1000) }
+            cr.update(uri, ContentValues().apply { put(MediaColumns.IS_PENDING, 0) }, null, null)
+            show("$name id=${uri.lastPathSegment} published", uri)
+        }
+        // One photo too, for the shell DATE_ADDED test.
+        variant("H-touch-first", null, atInsert = true, atPublish = true, after = false, touch = false, touchFirst = true)
+        query()
+    }
+
     fun dates() = ContentValues().apply {
         put(MediaColumns.DATE_TAKEN, taken)
         put(MediaColumns.DATE_MODIFIED, modS)
@@ -129,7 +155,7 @@ class MediaTest(val a: MainActivity) {
         val files = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         cr.query(files, arrayOf(MediaColumns._ID, MediaColumns.DISPLAY_NAME), "${MediaColumns.DISPLAY_NAME} LIKE 'gs-%'", null, null)?.use {
             a.log("re-query: ${it.count} spike rows")
-            while (it.moveToNext()) show(it.getString(1), Uri.withAppendedPath(files, it.getLong(0).toString()))
+            while (it.moveToNext()) show("${it.getString(1)} id=${it.getLong(0)}", Uri.withAppendedPath(files, it.getLong(0).toString()))
         }
     }
 }

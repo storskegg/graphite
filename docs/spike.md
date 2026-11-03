@@ -11,7 +11,7 @@ Android 17, build 2026102101) on 2026-11-03, with the throwaway app in
 | 2 | Can a phone act as an adb client over USB to the other phone in AOA accessory + adb mode? | Laptop does the one-time privileged setup | **Pass.** Both directions, in normal mode and in accessory + adb mode. Shell, `cmd package install` and `pm grant` all work |
 | 3 | Does "USB controlled by" swap the host role reliably on both phones, GrapheneOS included? | Laptop does the setup for the second phone | **Pass, with gotchas.** 7 of 7 swaps took effect in 1-3 s. Only the data role moves, and the Settings label can name the wrong phone |
 | 4 | Does a `pm install` from the shell lift the SMS and call-log restrictions on Android 17, and skip sideloading verification on stock? | Install both phones from the laptop with `adb install` | **Pass.** Shell installs get `RESTRICTION_INSTALLER_EXEMPT` on both. Verification is not enforced on stock yet, and shell installs opt out of it |
-| 5 | Can the target's MediaStore entries be given the source's `DATE_TAKEN` and modification time? | Accept that sort order may follow EXIF only | **Partly.** Modification time: yes. `DATE_TAKEN`: never written by the app; the scanner derives it from the bytes, so identical bytes give the same value |
+| 5 | Can the target's MediaStore entries be given the source's `DATE_TAKEN` and modification time? | Accept that sort order may follow EXIF only | **Partly.** Modification time: yes. `DATE_TAKEN`: never written by the app; the scanner derives it from the bytes (EXIF for photos, the MP4 `mvhd` creation time for videos), so identical bytes give the same value. `DATE_ADDED`: cannot be set, not even from the shell |
 
 The laptop was only a monitor: it watched both phones' logs over wireless
 debugging while they were cabled to each other. That was test instrumentation;
@@ -127,7 +127,44 @@ Since graphite copies exact bytes and restores the modification time before
 publishing, the target derives the same `DATE_TAKEN` the source's scanner did.
 The exception is a source item whose `DATE_TAKEN` came from the app that saved it
 and not from its bytes: on the target it is null, and galleries fall back to the
-modification time. Not tested: videos.
+modification time.
+
+### Videos
+
+Three test MP4s, inserted the same way on both phones (and checked again after a
+full volume rescan on the Pixel 10):
+
+| File | Restored mtime | `DATE_TAKEN` |
+|---|---|---|
+| `mvhd` creation time 2018-07-08T09:10:11Z | no | 2018-07-08T09:10:11Z |
+| same | yes (2020-01-02) | 2018-07-08T09:10:11Z |
+| `mvhd` creation time 0 | no / yes | null |
+| `mvhd` creation time 0, modification time 2016-05-01 | yes | null |
+
+So for videos the scanner takes `DATE_TAKEN` from the `mvhd` **creation time
+only**, as UTC. It ignores the `mvhd` modification time, and the file's
+modification time never feeds it (unlike a photo whose EXIF lacks an offset).
+Restoring the modification time still sets `DATE_MODIFIED`, as for photos.
+
+### `DATE_ADDED` from the shell
+
+Tested on both phones with the shell uid (`com.android.shell`), the identity
+graphite's adb client gets over the cable, on items the spike app inserted:
+
+- `content update --bind date_added:l:<seconds>` on `content://media/external/file`,
+  `.../external_primary/images/media`, `.../images/media/<id>` and
+  `.../video/media`: the command reports nothing, the value does not change, and
+  MediaProvider logs `Ignoring mutation of date_added from com.android.shell`.
+- The same happens to `date_modified`, `datetaken` and `title`. The update path
+  itself works: `is_favorite` changed in the same call.
+- `content insert` from the shell with `date_added` bound (a shell-copied file,
+  `_data` set) creates the row, but `date_added` is the insert time; nothing is
+  logged.
+- There is no `cmd media` or `cmd media_provider` service on either phone.
+  `content call --method scan_volume` rescans but leaves `DATE_ADDED` alone.
+
+`DATE_ADDED` is set by MediaProvider at insert and only MediaProvider itself (or
+root) can change it. A rescan keeps it (checked on the Pixel 10).
 
 ## Phones stay awake and unlocked
 
@@ -147,6 +184,6 @@ cd spike && ./gradlew assembleDebug
 Install on both phones (`adb install -r build/outputs/apk/debug/graphite-spike-debug.apk`),
 then use the buttons, or fire them with
 `adb shell am start -n io.github.storskegg.graphite.spike/.MainActivity --es run <name>`
-(`status`, `aoa`, `accessory`, `adb`, `adbinstall`, `perms`, `media`, `mediaquery`).
+(`status`, `aoa`, `accessory`, `adb`, `adbinstall`, `perms`, `media`, `video`, `mediaquery`).
 Results go to logcat tag `GSPIKE`. The app requests SMS, call-log and all-files
 access: uninstall it afterwards.
