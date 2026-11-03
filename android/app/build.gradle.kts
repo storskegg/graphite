@@ -24,7 +24,7 @@ dependencies {
 }
 
 /**
- * Builds the Rust core (`core-ffi/`, which wraps `core/`) for arm64 with the
+ * Builds the Rust core (`core-ffi/`, which wraps `core/` and `strip/`) for arm64 with the
  * NDK, then generates its Kotlin bindings with uniffi from the built library.
  */
 abstract class RustCore : DefaultTask() {
@@ -69,6 +69,7 @@ val rustCore = tasks.register<RustCore>("rustCore") {
         .firstOrNull { it != null && File(it).canExecute() } ?: "cargo")
     sources.from(
         fileTree(File(repo, "core")) { include("src/**", "Cargo.toml", "Cargo.lock") },
+        fileTree(File(repo, "strip")) { include("src/**", "Cargo.toml", "Cargo.lock") },
         fileTree(File(repo, "core-ffi")) { include("src/**", "Cargo.toml", "Cargo.lock", "uniffi.toml") },
     )
     jniLibs.set(layout.buildDirectory.dir("generated/rust/jniLibs"))

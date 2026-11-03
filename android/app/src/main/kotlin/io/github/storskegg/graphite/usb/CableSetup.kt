@@ -37,8 +37,9 @@ class CableSetup(private val ctl: Controller, private val conn: Connection) {
         val a = ctl.ask(Screen("Install graphite on the old phone?",
             "graphite isn't answering on the old phone, but USB debugging is on there, so this phone can install " +
                 "graphite over the cable and allow what it needs (access to all files, notifications).\n\n" +
-                "The old phone asks \"Allow USB debugging?\" for this phone's key: tap Allow there. You can turn USB " +
-                "debugging off again afterwards.",
+                "If the old phone says no installed apps work with this USB accessory, dismiss that message. " +
+                "The old phone then asks \"Allow USB debugging?\" for this phone's key: tap Allow there. You can turn " +
+                "USB debugging off again afterwards.",
             buttons = listOf("Install over the cable", "I'll install it myself", OPEN_THERE)))
         if (a.button == OPEN_THERE) return
         if (a.button != "Install over the cable") {
@@ -55,8 +56,33 @@ class CableSetup(private val ctl: Controller, private val conn: Connection) {
         ctl.ask(Screen("Setting up the old phone", result, buttons = listOf("Continue")))
     }
 
-    private fun install(dev: UsbDevice): String {
+    /**
+     * adb in accessory mode didn't answer from the Pixel 7 Pro (stray headers,
+     * then adbd dropped its USB transport), so setup uses normal mode, which
+     * the spike proved: the cable is replugged, and while the link is released
+     * nothing switches the old phone back to accessory mode.
+     */
+    private fun normalModeDevice(): UsbDevice {
         val um = ctl.usbManager
+        val deadline = System.currentTimeMillis() + 180_000
+        var asked = false
+        while (System.currentTimeMillis() < deadline) {
+            um.deviceList.values.firstOrNull { !Usb.isAccessoryMode(it) && Usb.adbInterface(it) != null }?.let { return it }
+            if (!asked) {
+                ctl.show(Screen("Setting up the old phone", "Unplug the cable from either phone and plug it back in. " +
+                    "If nothing happens, check that this new phone controls USB (the USB notification, \"USB controlled by\")."))
+                asked = true
+            }
+            Thread.sleep(500)
+        }
+        throw IOException("the old phone didn't come back with USB debugging after replugging")
+    }
+
+    private fun install(stalled: UsbDevice): String {
+        val um = ctl.usbManager
+        val dev = if (Usb.isAccessoryMode(stalled)) normalModeDevice() else stalled
+        if (!Usb.requestPermission(ctl.app, device = dev)) throw IOException("USB permission for the old phone was refused")
+        log("cable setup on ${Usb.describe(dev)}")
         val intf = Usb.adbInterface(dev) ?: throw IOException("the adb interface went away")
         val c = um.openDevice(dev) ?: throw IOException("could not open ${Usb.describe(dev)}")
         try {
@@ -91,7 +117,8 @@ class CableSetup(private val ctl: Controller, private val conn: Connection) {
 
     companion object {
         const val OPEN_THERE = "It's already open there"
-        const val SIDELOAD = "graphite isn't answering on the old phone. If it is open there, confirm it's you on " +
+        const val SIDELOAD = "graphite isn't answering on the old phone. If the old phone says no installed apps work " +
+            "with this USB accessory, graphite isn't installed there: dismiss that message. If it is open there, confirm it's you on " +
             "the old phone and allow it to use the USB accessory. If it isn't installed, either:\n\n" +
             "• Install it there yourself: copy graphite's APK to the old phone (or download it from " +
             "github.com/storskegg/graphite), open it in Files and allow installing from that app; then open graphite.\n\n" +
@@ -169,22 +196,53 @@ class AdbClient(private val c: UsbDeviceConnection, private val epIn: UsbEndpoin
         do { n = c.bulkTransfer(epIn, buf, buf.size, timeout) } while (n == 0)
         if (n < 24) throw IOException("no answer from adb on the other phone ($n)")
         val h = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN)
-        val len = h.getInt(12)
+        // A header's last word is its command inverted; anything else is a stray packet, not a message.
+        if (h.getInt(20) != h.getInt(0).inv()) throw Stray()
+        // Taken before reading the payload, which reuses [buf].
+        val cmd = h.getInt(0); val a0 = h.getInt(4); val a1 = h.getInt(8); val len = h.getInt(12)
         val data = ByteArrayOutputStream().apply { write(buf, 24, n - 24) }
         while (data.size() < len) {
             val k = c.bulkTransfer(epIn, buf, buf.size, timeout)
             if (k < 0) throw IOException("adb read failed")
             data.write(buf, 0, k)
         }
-        return Msg(h.getInt(0), h.getInt(4), h.getInt(8), data.toByteArray())
+        return Msg(cmd, a0, a1, data.toByteArray())
     }
 
-    /** Connects, signing adbd's token; if the key isn't trusted yet, offers it and waits for the user's Allow. */
+    private class Stray : IOException("stray data from adb")
+
+    /** Reads and drops whatever is waiting on the adb endpoint. */
+    private fun drain() {
+        val buf = ByteArray(16384)
+        var dropped = 0
+        while (true) { val n = c.bulkTransfer(epIn, buf, buf.size, 300); if (n <= 0) break; dropped += n }
+        if (dropped > 0) log("adb: dropped $dropped stray bytes")
+    }
+
+    /**
+     * Connects, signing adbd's token; if the key isn't trusted yet, offers it
+     * and waits for the user's Allow. A stray packet left on the endpoint (seen
+     * right after the switch to accessory mode) or no answer starts over, up to
+     * three times.
+     */
     fun connect(key: PrivateKey, pub: RSAPublicKey): String {
+        for (attempt in 1..3) {
+            drain()
+            try {
+                return connectOnce(key, pub)
+            } catch (e: IOException) {
+                if (attempt == 3 || (e !is Stray && e.message?.startsWith("no answer") != true)) throw e
+                log("adb: connect attempt $attempt: ${e.message}; trying again")
+            }
+        }
+        error("unreachable")
+    }
+
+    private fun connectOnce(key: PrivateKey, pub: RSAPublicKey): String {
         send(CNXN, 0x01000001, 256 * 1024, "host::features=shell_v2,cmd\u0000".toByteArray())
         var signed = false
         while (true) {
-            val m = read(if (signed) 120_000 else 10_000)
+            val m = read(if (signed) 120_000 else 5_000)
             when (m.cmd) {
                 AUTH -> if (!signed) {
                     val s = Signature.getInstance("NONEwithRSA")
@@ -197,7 +255,8 @@ class AdbClient(private val c: UsbDeviceConnection, private val epIn: UsbEndpoin
                 }
                 CNXN -> { maxData = m.a1; return String(m.data).trimEnd('\u0000') }
                 STLS -> throw IOException("the other phone asked for adb over TLS, which graphite doesn't support")
-                else -> log("adb: unexpected 0x%08x while connecting".format(m.cmd))
+                else -> log("adb: unexpected 0x%08x while connecting (args %08x %08x, %d bytes: %s)".format(
+                    m.cmd, m.a0, m.a1, m.data.size, m.data.take(32).joinToString("") { "%02x".format(it) }))
             }
         }
     }
