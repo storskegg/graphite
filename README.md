@@ -16,7 +16,7 @@ phones. Nothing to install yet.
 - Phones are joined by a USB-C cable (Android Open Accessory), the new phone as
   USB host: over 110 MB/s with a USB 3 cable. A laptop running adb is the
   fallback. No Wi-Fi.
-- Pairing is an NFC tap, with a QR code and then a 6-digit comparison as fallbacks.
+- Pairing happens over the cable; you confirm the same 6 digits on both screens.
 - Keys come from hybrid X25519 + ML-KEM-768 (X-Wing) in HPKE; bulk data is
   chunked XChaCha20-Poly1305; manifests and receipts are signed with ML-DSA-65.
 - Copying the same phone twice copies nothing the second time.

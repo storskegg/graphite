@@ -126,32 +126,28 @@ Each phone makes a fresh **key share** per session: an ephemeral X-Wing public k
 an ephemeral ML-DSA-65 verification key and a nonce. A **commitment** to a share is
 a BLAKE3 hash over the role, the session ID and the share.
 
-1. **NFC tap (default).** The target emulates a card (host card emulation, private
-   AID, preferred service while the app is in front); the source reads it. The
-   target's answer carries its commitment, the source's reply carries its own.
-   Each side then checks the other's share on the cable against the commitment it
-   got over NFC. No secret crosses NFC, so a passive listener learns nothing useful.
-2. **QR code.** The target shows: protocol version, suite, session ID, its
-   commitment and a 256-bit one-time secret. The source scans it. The secret is the
-   HPKE pre-shared key in both directions and never crosses the cable, so only a
-   peer that scanned the code can complete the key confirmation.
-3. **6-digit comparison.** Commit-then-reveal: the source sends its commitment, the
-   target sends its share, the source reveals its share. Because the source is
-   bound before it sees the target's share, no one can pick a share to steer the
-   code. Both screens show 6 digits derived from the transcript hash; the user
-   confirms they match on both, and pairing cannot finish until they have. One
-   chance in 10^6 for a man-in-the-middle per attempt, nothing to attack offline.
+**Pairing runs entirely over the USB cable, checked by a 6-digit comparison.** There
+is no NFC or QR pairing: they were considered and dropped to keep one way to pair.
 
-All three use the same six messages; only the channel of the first two differs:
+Commit-then-reveal: the source sends its commitment, the target sends its share,
+the source reveals its share. Because the source is bound before it sees the
+target's share, no one can pick a share to steer the code. Both screens show 6
+digits derived from the transcript hash; the user confirms they match on both, and
+pairing cannot finish until they have. A man-in-the-middle in the cable (a tampered
+cable or hub) has one chance in 10^6 per attempt and nothing to attack offline.
+Without the comparison, anything in the cable could sit in the middle unnoticed;
+it is never skipped.
 
-| # | Message | NFC | QR | Code |
-|---|---|---|---|---|
-| 1 | Target hello: version, suite, method, session ID, commitment, QR secret | NFC | QR code | cable (no commitment) |
-| 2 | Source commitment | NFC | cable | cable |
-| 3 | Target share | cable | cable | cable |
-| 4 | Source share and its HPKE encapsulation to the target | cable | cable | cable |
-| 5 | Target's HPKE encapsulation to the source, and its key confirmation | cable | cable | cable |
-| 6 | Source key confirmation | cable | cable | cable |
+Six messages, all over the cable:
+
+| # | Message |
+|---|---|
+| 1 | Target hello: version, suite, session ID |
+| 2 | Source commitment |
+| 3 | Target share |
+| 4 | Source share and its HPKE encapsulation to the target |
+| 5 | Target's HPKE encapsulation to the source, and its key confirmation |
+| 6 | Source key confirmation |
 
 **Both sides encapsulate.** Anyone can encapsulate to a public key, so a single
 encapsulation from source to target would give the target no proof of who sent it.
@@ -216,7 +212,7 @@ Not protected against:
 - A compromised laptop in the laptop route: with adb it has a shell on both phones
   and can read plaintext directly.
 - A compromised source or target phone.
-- An active NFC relay with equipment within centimetres of both phones.
+- A user who confirms the 6-digit codes without looking at both screens.
 
 ## What can and cannot move
 
