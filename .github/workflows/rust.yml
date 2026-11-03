@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crate: [core, strip]
+        crate: [core, strip, core-ffi]
     defaults:
       run:
         working-directory: ${{ matrix.crate }}
