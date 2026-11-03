@@ -1,0 +1,31 @@
+[package]
+name = "graphite-core-ffi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "uniffi wrapper around graphite-core, for the Android app"
+repository = "https://github.com/storskegg/graphite"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "graphite_ffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+# Host only: generates the Kotlin bindings from the built library.
+required-features = ["cli"]
+
+[dependencies]
+graphite-core = { path = "../core" }
+uniffi = "=0.32.2"
+
+[features]
+cli = ["uniffi/cli"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

@@ -1,0 +1,129 @@
+package io.github.storskegg.graphite
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbManager
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import io.github.storskegg.graphite.auth.AuthGate
+import io.github.storskegg.graphite.role.AppRole
+import io.github.storskegg.graphite.role.RoleResult
+import io.github.storskegg.graphite.role.UnattestedRoleCheck
+import io.github.storskegg.graphite.ui.Answer
+import io.github.storskegg.graphite.ui.Screen
+import io.github.storskegg.graphite.ui.Status
+import io.github.storskegg.graphite.usb.LinkSpeed
+import java.util.concurrent.CompletableFuture
+
+const val TAG = "graphite"
+
+fun log(s: String) { Log.i(TAG, s) }
+
+/** Thrown into the flow thread when the user stops the session. */
+class StoppedException : Exception("stopped")
+
+/**
+ * The app's state for the life of the process: the user-authentication gate,
+ * this phone's role, what the screen shows, and the session's worker thread.
+ * The activity draws [screen] and [status] and hands back answers; the flows
+ * block on [ask] for them.
+ */
+class Controller(val app: Context) {
+    val gate = AuthGate(app)
+    val role: RoleResult = UnattestedRoleCheck.check(app)
+    val usbManager: UsbManager = app.getSystemService(UsbManager::class.java)
+    private val main = Handler(Looper.getMainLooper())
+
+    @Volatile var screen = Screen("graphite")
+        private set
+    @Volatile var status = Status()
+        private set
+    private var pending: CompletableFuture<Answer>? = null
+    private val listeners = mutableListOf<() -> Unit>()
+    @Volatile var linkSpeed: LinkSpeed? = null
+    private var worker: Thread? = null
+
+    init {
+        app.registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) = gate.invalidate("the screen turned off")
+        }, IntentFilter(Intent.ACTION_SCREEN_OFF), Context.RECEIVER_NOT_EXPORTED)
+        gate.onChange { updateStatus() }
+        updateStatus()
+    }
+
+    fun onChange(l: () -> Unit) = synchronized(listeners) { listeners += l }
+    fun removeListener(l: () -> Unit) = synchronized(listeners) { listeners -= l }
+    private fun changed() = main.post { synchronized(listeners) { listeners.toList() }.forEach { it() } }
+
+    fun updateStatus(usb: String? = null) {
+        status = Status(
+            role = role.explanation,
+            usb = usb ?: status.usb,
+            auth = if (gate.isValid()) "You confirmed it's you." else "Not confirmed: graphite will ask before pairing or touching files.",
+        )
+        changed()
+    }
+
+    /** Shows a screen without waiting for an answer. */
+    fun show(s: Screen) {
+        screen = s
+        changed()
+    }
+
+    /** Shows a question and blocks the flow thread until the user answers it. */
+    fun ask(s: Screen): Answer {
+        val f = CompletableFuture<Answer>()
+        synchronized(this) { pending?.cancel(false); pending = f }
+        show(s)
+        return try { f.get() } catch (e: java.util.concurrent.CancellationException) { throw StoppedException() }
+    }
+
+    /** From the activity: a button was tapped. */
+    fun answer(a: Answer) {
+        val f = synchronized(this) { pending.also { pending = null } } ?: return
+        f.complete(a)
+    }
+
+    /**
+     * Blocks until the user has authenticated since the last lock or leaving
+     * graphite. With [fresh], always asks again (removal from the source).
+     */
+    fun requireAuth(reason: String, fresh: Boolean = false) {
+        if (!gate.deviceSecure) {
+            ask(Screen("A screen lock is needed",
+                "graphite only works on a phone with a PIN, pattern or password, so that someone holding " +
+                    "your unlocked phone cannot pull files off it or push files onto it. Set a screen lock " +
+                    "in Settings > Security, then come back.", buttons = listOf("I've set one")))
+            return requireAuth(reason, fresh)
+        }
+        if (fresh) gate.invalidate("asked again before $reason")
+        while (!gate.isValid()) {
+            ask(Screen("Confirm it's you", "graphite needs you to unlock it before it $reason.",
+                buttons = listOf("Confirm it's you"), authReason = reason))
+        }
+        updateStatus()
+    }
+
+    val isTarget get() = role.role == AppRole.TARGET
+
+    /** Starts the session's flow once; later calls do nothing while it runs. */
+    @Synchronized
+    fun start() {
+        if (worker?.isAlive == true) return
+        worker = Thread({
+            try {
+                Flows(this).run()
+            } catch (_: StoppedException) {
+                log("stopped")
+            } catch (t: Throwable) {
+                Log.e(TAG, "flow failed", t)
+                show(Screen("Something went wrong", t.message ?: t.toString(), buttons = listOf()))
+            } finally {
+                TransferService.stop(app)
+            }
+        }, "graphite-flow").apply { start() }
+    }
+}

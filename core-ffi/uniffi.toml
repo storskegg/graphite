@@ -1,0 +1,3 @@
+[bindings.kotlin]
+package_name = "io.github.storskegg.graphite.ffi"
+cdylib_name = "graphite_ffi"
