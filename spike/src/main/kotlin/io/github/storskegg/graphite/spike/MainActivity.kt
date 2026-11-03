@@ -42,6 +42,12 @@ class MainActivity : Activity() {
         "media" to { MediaTest(this).run() },
         "video" to { MediaTest(this).videos() },
         "mediaquery" to { MediaTest(this).query() },
+        "smsrole" to { SmsTest(this).role() },
+        "requestsms" to { runOnUiThread { SmsTest(this).requestRole() } },
+        "sms" to { SmsTest(this).sms() },
+        "mms" to { SmsTest(this).mms() },
+        "calls" to { SmsTest(this).calls() },
+        "cleanup" to { SmsTest(this).cleanup() },
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -139,6 +145,11 @@ class MainActivity : Activity() {
         log("install source: installer=${src.installingPackageName} initiator=${src.initiatingPackageName} packageSource=${src.packageSource}")
         for (p in restricted) log("  before: $p granted=${checkSelfPermission(p) == 0} rationale=${shouldShowRequestPermissionRationale(p)}")
         requestPermissions(restricted, 7)
+    }
+
+    override fun onActivityResult(code: Int, result: Int, data: Intent?) {
+        log("activity result $code: ${if (result == RESULT_OK) "OK" else "cancelled ($result)"}")
+        SmsTest(this).role()
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {

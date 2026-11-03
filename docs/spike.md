@@ -12,6 +12,7 @@ Android 17, build 2026102101) on 2026-11-03, with the throwaway app in
 | 3 | Does "USB controlled by" swap the host role reliably on both phones, GrapheneOS included? | Laptop does the setup for the second phone | **Pass, with gotchas.** 7 of 7 swaps took effect in 1-3 s. Only the data role moves, and the Settings label can name the wrong phone |
 | 4 | Does a `pm install` from the shell lift the SMS and call-log restrictions on Android 17, and skip sideloading verification on stock? | Install both phones from the laptop with `adb install` | **Pass.** Shell installs get `RESTRICTION_INSTALLER_EXEMPT` on both. Verification is not enforced on stock yet, and shell installs opt out of it |
 | 5 | Can the target's MediaStore entries be given the source's `DATE_TAKEN` and modification time? | Accept that sort order may follow EXIF only | **Partly.** Modification time: yes. `DATE_TAKEN`: never written by the app; the scanner derives it from the bytes (EXIF for photos, the MP4 `mvhd` creation time for videos), so identical bytes give the same value. `DATE_ADDED`: cannot be set, not even from the shell |
+| 6 | Can graphite write SMS, MMS and call-log entries on GrapheneOS, and take and give back the SMS role? | No messages or call log | **Pass.** The role moves by dialog or silently by `cmd role` from the shell. SMS and MMS keep their dates and show in order, images included, in Google Messages. The shell alone can write the call log but not SMS |
 
 The laptop was only a monitor: it watched both phones' logs over wireless
 debugging while they were cabled to each other. That was test instrumentation;
@@ -166,6 +167,71 @@ graphite's adb client gets over the cable, on items the spike app inserted:
 `DATE_ADDED` is set by MediaProvider at insert and only MediaProvider itself (or
 root) can change it. A rescan keeps it (checked on the Pixel 10).
 
+## 6. SMS, MMS and call log on the target
+
+Tested on the Pixel 10 (GrapheneOS, live Google Fi SIM) on 2026-11-03, with the
+user's real Messages and call log. Every test row used the fake number
++1 555 0100 and a "GRAPHITE SPIKE TEST — safe to delete" body. All of them
+(SMS 149-153, MMS 379 with parts 534-536 and addresses 1188-1189, calls 315-318)
+were deleted by ID afterwards and checked gone, and the SMS role went back to its
+holder.
+
+**SMS role.** The holder was **Google Messages** (`com.google.android.apps.messaging`),
+not GrapheneOS's AOSP Messaging, which is also installed. The spike qualified for
+the role with the four components (SMS_DELIVER receiver, WAP_PUSH_DELIVER
+receiver, RESPOND_VIA_MESSAGE service, SENDTO activity).
+
+- `RoleManager.createRequestRoleIntent`: Android's standard "Set as default SMS
+  app" dialog, one tap. The user reported no extra GrapheneOS prompt.
+- `cmd role add-role-holder android.app.role.SMS <pkg>` from the shell: rc 0, **no
+  prompt**, effective at once. The same command with Google Messages gives the
+  role back; both directions took 0.35 s.
+- The spike held the role for about four minutes via the dialog and 0.35 s via the
+  shell. No SMS or MMS arrived in either window (checked in the provider and the
+  spike's receivers), so **delivery to a temporary holder was not tested**. While
+  the spike held the role, an incoming SMS would have gone to it (it saves SMS to
+  the inbox as a normal SMS app would), and an MMS would not have been downloaded.
+
+**SMS.** The role holder inserted three received and two sent messages dated
+2020-01-01 to 2020-01-03. `date` and `date_sent` were stored as given. All five
+landed in one new thread for the number, and Google Messages showed them there
+after it got the role back, in date order, with the right sides (received left,
+sent right) and 2020 date headers.
+
+**MMS.** One inbox MMS (dates in seconds, `m_type` 132) with a SMIL part, a
+96 px PNG part written through the part URI, a text part and from/to addresses,
+in the same thread. Google Messages showed the image, the subject and the text
+in date order among the SMS.
+
+**Call log.** Incoming, outgoing and missed calls dated 2-4 days back, with
+durations, all showed in GrapheneOS's Dialer (Recents) with the right arrows and
+"N days ago".
+
+- Rewritten by the provider: `last_modified` (set to the insert time) and
+  `geocoded_location` (blank, though a value was written).
+- The `name` column was stored, but Dialer shows the number: it looks names up in
+  Contacts. Subscription columns stay null unless written. Whether the missed call
+  raised a notification was not checked.
+
+**From the shell** (the uid graphite's adb client gets):
+
+- The call log: insert and delete both work (`CallLogProvider: insert uid/pid=2000`).
+  So the target app does not even need WRITE_CALL_LOG for it.
+- SMS: `content insert` and `content delete` are silently ignored; only the SMS
+  role holder can write. Reading works (`canReadRestrictedMessages=true`).
+
+Gotchas:
+
+- An app's `delete` of a single call URI (`content://call_log/calls/<id>`) throws
+  `UnsupportedOperationException`; delete with a `_id` selection instead.
+- Deleting an MMS deletes its parts and addresses; deleting those by URI first
+  returned 0. Deleting a thread's last message removes the thread.
+- Google Messages keeps its own copy of messages. Inserts made while it was not
+  the holder appeared once it had the role back, and the deletions disappeared
+  from it within a minute.
+- Not checked: whether Google Messages' RCS chat features survived losing the role
+  for four minutes. The user should look in Messages, Settings, RCS chats.
+
 ## Phones stay awake and unlocked
 
 GrapheneOS turns the port to charging-only and refuses new USB devices while the
@@ -184,6 +250,6 @@ cd spike && ./gradlew assembleDebug
 Install on both phones (`adb install -r build/outputs/apk/debug/graphite-spike-debug.apk`),
 then use the buttons, or fire them with
 `adb shell am start -n io.github.storskegg.graphite.spike/.MainActivity --es run <name>`
-(`status`, `aoa`, `accessory`, `adb`, `adbinstall`, `perms`, `media`, `video`, `mediaquery`).
+(`status`, `aoa`, `accessory`, `adb`, `adbinstall`, `perms`, `media`, `video`, `mediaquery`, `smsrole`, `requestsms`, `sms`, `mms`, `calls`, `cleanup`).
 Results go to logcat tag `GSPIKE`. The app requests SMS, call-log and all-files
-access: uninstall it afterwards.
+access, and can hold the SMS role: give the role back and uninstall it afterwards.
