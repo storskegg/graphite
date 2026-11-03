@@ -2,7 +2,8 @@
 
 Copy photos, videos, screenshots, downloads, documents and audio from the source to
 the target. Never create a duplicate. Running the same transfer twice copies nothing
-the second time.
+the second time. Nothing is removed from the source unless both phones have verified
+the result and the user then asks for it.
 
 ## What is in scope
 
@@ -138,55 +139,157 @@ metadata**). A target file is the same item if its bytes match either one.
 Exact-bytes identity has no false positives: two different files are never treated
 as one.
 
-## How the target decides
+## The transfer, phase by phase
 
-The target never sends its inventory to the source. The source sends a manifest; the
-target alone decides what to request.
+The manifest goes first, and nothing is copied until both phones have checked it.
+The target never sends its inventory to the source: the source sends the manifest,
+and the target alone decides what to request.
 
-1. **Source builds the manifest.** A header with the metadata choice and the
-   stripper version. For each file: relative path, MIME type, `DATE_TAKEN`,
-   modification time, and size and BLAKE3 hash both of the original and of the
-   bytes to be sent. The manifest is signed with the session's ML-DSA key and sent
-   inside the encrypted channel.
-2. **Target narrows by size.** It lists its own MediaStore (including trash) and
+| Phase | What happens | Signed document |
+|---|---|---|
+| 1. Manifest | Source lists, hashes and (if chosen) strips in memory; sends the manifest | Manifest (source) |
+| 2. Comparison | Target works out what it already has | |
+| 3. Preflight | Space, battery, names and open questions checked; both phones show the plan; the user starts the copy | Plan (target) |
+| 4. Copy | Requested files are written, checked and published one by one | |
+| 5. Verification | Target re-reads everything the receipt will vouch for | Receipt (target) |
+| 6. Removal (optional) | Only if the user asks, on the source, from a verified receipt | |
+
+The plan is a third signed document next to the manifest and receipt. The core
+needs a `graphite/1 plan` context string for it.
+
+### 1. Manifest
+
+A header with the metadata choice and the stripper version. For each file: relative
+path, MIME type, `DATE_TAKEN`, modification time, and size and BLAKE3 hash both of
+the original and of the bytes to be sent. Signed with the session's ML-DSA key and
+sent inside the encrypted channel.
+
+### 2. Comparison
+
+1. **Target narrows by size.** It lists its own MediaStore (including trash) and
    groups files by size. Only target files whose size matches either size of a
    manifest entry are hashed. Most files are ruled out without reading them.
-3. **Target hashes the candidates**, using its hash cache (below), and compares
+2. **Target hashes the candidates**, using its hash cache (below), and compares
    each against both hashes.
-4. **Target requests** every manifest entry it holds under neither hash, once per
-   sent hash.
-5. **Target writes the file, then checks the hash, then publishes it.** MediaStore
-   entry inserted with `IS_PENDING = 1` into the same relative folder; bytes
-   streamed in; `fsync`; BLAKE3 recomputed and compared to the manifest's sent hash; the
-   source's modification time set on the file (`File.setLastModified`, which works
-   on the app's own pending file); only then `IS_PENDING = 0`. A mismatch deletes
-   the pending entry and retries once.
+3. **Each manifest entry gets a status:** *to copy* (held under neither hash, one
+   per sent hash), *present* (held, not in trash) or *present in trash*.
 
-   The publish scan sets `DATE_MODIFIED` from that modification time. The app
-   cannot write `DATE_TAKEN`: MediaStore overwrites it at publish and ignores later
-   updates. The scanner derives it from the file's EXIF (and from the modification
-   time when EXIF has no time-zone offset), so identical bytes plus the restored
-   modification time give the same `DATE_TAKEN` as on the source. The manifest's
-   `DATE_TAKEN` is compared after publishing; an item whose source value came from
-   the app that saved it, not from its bytes, ends up with none, galleries sort it
-   by modification time, and the receipt notes it. See
-   [spike.md](spike.md#5-mediastore-dates).
-6. **Target signs a receipt** listing what was copied, skipped as already present,
-   and failed, and sends it back. Both phones show the same summary.
+### 3. Preflight
+
+Before anything is copied, the target checks, and both phones show the result:
+
+- **Storage.** Bytes needed is the sum of the sent sizes of everything *to copy*.
+  It must fit within `StorageManager.getAllocatableBytes` on the target (which
+  already leaves Android's own reserve) with 1 GiB to spare. If it does not, the
+  plan shows sizes by category and folder and the user unticks until it fits. The
+  copy does not start until it fits.
+- **Battery.** The USB host powers the other phone (see
+  [spike.md](spike.md#3-swapping-the-host-role)). Both phones report charge and
+  whether they are charging. From the measured link speed the app estimates the
+  time. It warns when either phone is under 50 % and not charging for a long
+  transfer, and will not start under 15 %.
+- **Names.** Every path is checked against what the target's MediaStore accepts
+  (components at most 255 bytes, no reserved names). Anything that fails is listed
+  with the name it will get instead.
+- **Open questions.** Files whose metadata cannot be removed (see above) are asked
+  about here, once per group.
+- **Time.** An estimate from the link speed measured during pairing.
+
+The **plan** lists every entry with its status and the bytes involved. The target
+signs it; the source checks the signature and that it answers this manifest. Both
+phones show the same summary: "1,204 to copy (38.2 GB), 3,511 already on the new
+phone, 2 in the new phone's trash (not copied), about 6 minutes". The user starts
+the copy on the target.
+
+### 4. Copy
+
+For each file *to copy*:
+
+1. MediaStore entry inserted with `IS_PENDING = 1` in the same relative folder.
+2. The source re-reads the file, strips it if chosen, and checks that its hashes
+   still match the manifest. A file that changed since the manifest is not sent;
+   it is reported as *changed on the old phone* and copied on the next run.
+3. Bytes streamed in; `fsync`; BLAKE3 recomputed and compared to the manifest's
+   sent hash; a mismatch deletes the pending entry and retries once.
+4. The source's modification time set on the file (`File.setLastModified`, which
+   works on the app's own pending file); then `IS_PENDING = 0`.
+
+The publish scan sets `DATE_MODIFIED` from that modification time. The app cannot
+write `DATE_TAKEN`: MediaStore overwrites it at publish and ignores later updates.
+The scanner derives it from the file's EXIF (and from the modification time when
+EXIF has no time-zone offset), so identical bytes plus the restored modification
+time give the same `DATE_TAKEN` as on the source. An item whose source value came
+from the app that saved it, not from its bytes, ends up with none, and galleries
+sort it by modification time. See [spike.md](spike.md#5-mediastore-dates).
+
+If the target runs out of space anyway (another app filled it), the copy pauses and
+asks; nothing half-written is published.
+
+### 5. Verification
+
+After the last file, the target re-reads every item the receipt will call
+*verified*: everything copied in this run and everything *present*. It reads the
+bytes through MediaStore, hashes them **without the cache**, and checks the entry is
+published, not pending and not trashed. This catches a bad write, or a file the user
+changed or deleted on the target during the transfer. It also compares `DATE_TAKEN`
+with the manifest and notes any difference.
+
+The **receipt** gives every manifest entry one status:
+
+| Status | Meaning |
+|---|---|
+| Copied, verified | Written in this run and read back with the right hash |
+| Present, verified | Was already on the target and read back with a matching hash |
+| Present in trash | On the target, but in its trash; not copied, not verified |
+| Not copied | With a reason: changed on the old phone, did not fit, metadata could not be removed and the user skipped it, failed twice, unticked |
+
+The target signs it with the manifest's hash; the source checks both. Both phones
+show the same summary.
+
+### 6. Removal from the source (optional)
+
+Only offered after a verified receipt, only on the source, and only if the user
+asks. Nothing is preselected.
+
+- **What can be removed:** entries the receipt marks *copied, verified* or *present,
+  verified*, whose file on the source still hashes to the manifest's original
+  hash. The source re-hashes each one just before removing it.
+- **Never:** *present in trash* entries (the target's trash empties itself after
+  30 days), *not copied* entries, and anything whose source file changed.
+- **The user picks** by category and folder (for example photos and videos, but
+  not downloads).
+- **When metadata was removed** in the copy, the new phone's copies lack what the
+  old phone's still have. Before removal the user is told, with counts: "1,204
+  photos on the new phone have had their location removed; removing them here loses
+  it for good."
+- **To the trash, not deleted.** Files are moved to the source's trash with
+  `MediaStore.createTrashRequest`, which shows Android's own confirmation once for
+  the batch. They can be restored for 30 days. graphite never deletes permanently;
+  the user empties the trash when they are ready.
+- **Only from this session's receipt.** A receipt from an earlier session is not
+  enough: the target may have changed since. Running the transfer again gives a
+  fresh receipt (nothing to copy, everything *present*), which can then be used for
+  removal.
+
+## Idempotence
+
+- A transfer is identified by the hash of its manifest. The target keeps a journal
+  keyed by sent hash: *pending*, *published*, *verified*.
+- **After an interruption** (cable out, app killed, phone locked), nothing
+  half-written is visible: unfinished items are still pending. On the next run the
+  target deletes its own leftover pending entries and the source builds a new
+  manifest. The comparison skips what was published, and only the rest is copied.
+- **After a finished transfer**, running it again copies nothing and verifies
+  everything again.
+- **Removal is idempotent** too: trashed files are out of scope for the manifest,
+  so a later run neither copies them again nor offers to remove them twice.
 
 ## Hash cache
 
 The target keeps a small SQLite table: MediaStore ID, size, modification time,
 BLAKE3. An entry is reused only while ID, size and modification time all still match;
-otherwise the file is hashed again. The cache only saves time: a missing or stale
-cache never changes the outcome, only how long step 3 takes.
-
-## Interruptions
-
-If the cable comes out or an app is killed, nothing half-written is ever visible:
-unfinished items are still pending. On the next run the target deletes its own
-leftover pending entries and the manifest comparison starts over, so finished files
-are skipped and the rest are copied.
+otherwise the file is hashed again. The cache only saves time in the comparison:
+a missing or stale cache never changes the outcome, and verification never uses it.
 
 ## Speed notes
 
