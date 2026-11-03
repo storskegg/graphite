@@ -1,39 +1,33 @@
-//! Pairing: two sans-I/O state machines, one per role.
-//!
-//! All three methods run the same six messages; only the channel of the
-//! first two differs, and what each side checks:
+//! Pairing: two sans-I/O state machines, one per role, over the USB cable,
+//! checked by a six-digit comparison.
 //!
 //! ```text
-//!   target                                                     source
-//!   Hello {version, suite, method, session, [H(share_T)], [psk]}  ->   NFC card, QR code, or cable
-//!   <-  SourceCommit {session, H(share_S)}                            NFC reply, or cable
-//!   TargetShare {share_T}                                          ->   cable from here on
+//!   target                                     source
+//!   Hello {version, suite, session}       ->
+//!   <-  SourceCommit {session, H(share_S)}
+//!   TargetShare {share_T}                 ->
 //!   <-  SourceShare {share_S, enc_S}
-//!   TargetKem {enc_T, confirm_T}                                   ->
+//!   TargetKem {enc_T, confirm_T}          ->
 //!   <-  SourceConfirm {confirm_S}
 //! ```
 //!
 //! A key share is an ephemeral X-Wing public key, an ephemeral ML-DSA-65
 //! verification key and a 32-byte nonce. `H` is a commitment that binds the
-//! role and session. Each side then encapsulates to the other's X-Wing key
-//! with HPKE (PSK mode with the QR secret, base mode otherwise), so each
-//! side's keys depend on a secret only the genuine peer can recover: anyone
-//! can encapsulate to a public key, but only its owner can decapsulate.
+//! role and session. The source commits before it sees the target's share and
+//! reveals after, so neither side, nor anyone between them, can choose a
+//! share to steer the code. Both screens show six digits from the transcript
+//! hash. The code is only compared by the user: it never feeds a key, so
+//! there is nothing to search offline. Pairing cannot finish until the user
+//! has confirmed it on both phones.
 //!
-//! - **NFC**: both commitments cross NFC, where a cable attacker cannot reach;
-//!   each side checks the peer's share against them.
-//! - **QR**: the source checks the target's share against the QR's hash; the
-//!   QR's 256-bit secret is the HPKE PSK, so only a source that scanned the
-//!   code passes key confirmation.
-//! - **Code**: the source commits before it sees the target's share and
-//!   reveals after, so neither side, nor anyone between them, can choose a
-//!   share to steer the code. Both screens show six digits from the
-//!   transcript hash. The code is only compared by the user: it never feeds
-//!   a key, so there is nothing to search offline.
+//! Each side then encapsulates to the other's X-Wing key with HPKE (base
+//! mode), so each side's keys depend on a secret only the genuine peer can
+//! recover: anyone can encapsulate to a public key, but only its owner can
+//! decapsulate.
 //!
-//! The transcript binds the protocol version, the cipher suite, the method,
-//! the session ID, both shares and both encapsulations. Key confirmation in
-//! both directions proves the two transcripts and secrets are the same.
+//! The transcript binds the protocol version, the cipher suite, the session
+//! ID, both shares and both encapsulations. Key confirmation in both
+//! directions proves the two transcripts and secrets are the same.
 
 use blake3::Hasher;
 use hpke_rs::HpkePrivateKey;
@@ -41,34 +35,11 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 use crate::codec::{Reader, Writer};
-use crate::hpke::{self, Psk, SUITE, XWING_ENC_LEN, XWING_PUBLIC_KEY_LEN};
-use crate::random::{random, random_secret};
+use crate::hpke::{self, SUITE, XWING_ENC_LEN, XWING_PUBLIC_KEY_LEN};
+use crate::random::random;
 use crate::session::Session;
 use crate::signing::{SigningKey, VERIFICATION_KEY_LEN};
 use crate::{Error, PROTOCOL_VERSION, Role, SUITE_ID, SUITE_NAME};
-
-/// How the two phones authenticate each other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Method {
-    /// NFC tap: hashes of both key shares cross NFC.
-    Nfc = 1,
-    /// QR code: the target shows its key hash and a one-time 256-bit secret.
-    Qr = 2,
-    /// Six-digit comparison: commit-then-reveal, the user compares two screens.
-    Code = 3,
-}
-
-impl Method {
-    fn from_u8(v: u8) -> Result<Self, Error> {
-        match v {
-            1 => Ok(Method::Nfc),
-            2 => Ok(Method::Qr),
-            3 => Ok(Method::Code),
-            _ => Err(Error::Malformed),
-        }
-    }
-}
 
 const HELLO: u8 = 1;
 const SOURCE_COMMIT: u8 = 2;
@@ -79,7 +50,6 @@ const SOURCE_CONFIRM: u8 = 6;
 
 const SESSION_ID_LEN: usize = 16;
 const SHARE_LEN: usize = XWING_PUBLIC_KEY_LEN + VERIFICATION_KEY_LEN + 32;
-const PSK_ID: &[u8] = b"graphite/1 qr secret";
 
 /// Opens a message: checks its tag and hands back a reader for the rest.
 fn open(msg: &[u8], expected: u8) -> Result<Reader<'_>, Error> {
@@ -213,37 +183,23 @@ impl Keys {
 
 /// State shared by both roles.
 struct Common {
-    method: Method,
     share: OwnShare,
     transcript: Transcript,
-    psk: Option<Zeroizing<[u8; 32]>>,
     code: Option<String>,
     code_confirmed: bool,
 }
 
 impl Common {
-    fn psk(&self) -> Option<Psk<'_>> {
-        self.psk.as_ref().map(|p| Psk {
-            psk: &p[..],
-            id: PSK_ID,
-        })
-    }
-
     /// Absorbs the source's share, which completes the part of the
     /// transcript that the code and the HPKE info cover.
     fn shares_done(&mut self, source_share: &[u8]) -> [u8; 32] {
         self.transcript.absorb(source_share);
         let th1 = self.transcript.hash();
-        if self.method == Method::Code {
-            self.code = Some(six_digit_code(&th1));
-        }
+        self.code = Some(six_digit_code(&th1));
         th1
     }
 
     fn confirm_code(&mut self) -> Result<(), Error> {
-        if self.method != Method::Code {
-            return Err(Error::WrongMethod);
-        }
         if self.code.is_none() {
             return Err(Error::UnexpectedMessage);
         }
@@ -270,31 +226,21 @@ pub struct TargetPairing {
 }
 
 impl TargetPairing {
-    pub fn new(method: Method) -> Result<Self, Error> {
+    pub fn new() -> Result<Self, Error> {
         let share = OwnShare::generate()?;
         let session_id = random::<SESSION_ID_LEN>()?;
-        let psk = match method {
-            Method::Qr => Some(random_secret::<32>()?),
-            _ => None,
-        };
-        let mut w = Writer::new();
-        w.u8(HELLO)
+        let hello = Writer::new()
+            .u8(HELLO)
             .u16(PROTOCOL_VERSION)
             .u16(SUITE_ID)
-            .u8(method as u8)
-            .fixed(&session_id);
-        if method != Method::Code {
-            w.fixed(&commitment(Role::Target, &session_id, &share.encoded));
-        }
-        let hello = w.finish();
+            .fixed(&session_id)
+            .finish();
         let mut transcript = Transcript::new();
         transcript.absorb(&hello);
         Ok(Self {
             common: Common {
-                method,
                 share,
                 transcript,
-                psk,
                 code: None,
                 code_confirmed: false,
             },
@@ -304,16 +250,9 @@ impl TargetPairing {
         })
     }
 
-    /// The first message: the NFC card's answer, the QR code's content, or,
-    /// for the code method, the first message on the cable. The same bytes
-    /// on every call. For QR it contains the one-time secret: show it, never
-    /// send it over the cable.
+    /// The first message on the cable. The same bytes on every call.
     pub fn hello(&self) -> Vec<u8> {
-        let mut hello = self.hello.clone();
-        if let Some(psk) = &self.common.psk {
-            hello.extend_from_slice(&psk[..]);
-        }
-        hello
+        self.hello.clone()
     }
 
     /// Takes the source's next message and returns the reply, if any. Any
@@ -369,7 +308,6 @@ impl TargetPairing {
                     enc_source,
                     &self.common.share.xwing,
                     &hpke_info(Role::Source, &th1),
-                    self.common.psk(),
                 )?;
                 let from_source = hpke::export(&ctx, EXPORTER_CONTEXT)?;
                 self.common.transcript.absorb(enc_source);
@@ -379,7 +317,6 @@ impl TargetPairing {
                     hpke::system_rng()?,
                     &peer.xwing_pk,
                     &hpke_info(Role::Target, &th1),
-                    self.common.psk(),
                 )?;
                 let from_target = hpke::export(&ctx, EXPORTER_CONTEXT)?;
                 self.common.transcript.absorb(&enc_target);
@@ -408,7 +345,7 @@ impl TargetPairing {
         }
     }
 
-    /// For the code method, once both shares are known: the six digits to show.
+    /// Once both shares are known: the six digits to show.
     pub fn code(&self) -> Option<String> {
         self.common.code.clone()
     }
@@ -418,8 +355,8 @@ impl TargetPairing {
         self.common.confirm_code()
     }
 
-    /// The paired session, once the handshake is complete (and, for the code
-    /// method, the code confirmed). Can be taken once.
+    /// The paired session, once the handshake is complete and the code
+    /// confirmed. Can be taken once.
     pub fn finish(&mut self) -> Result<Session, Error> {
         finish(&mut self.state, &mut self.common, Role::Target)
     }
@@ -461,7 +398,7 @@ fn finish(state: &mut impl Finishable, common: &mut Common, role: Role) -> Resul
     if state.is_failed() {
         return Err(Error::Failed);
     }
-    if state.is_done() && common.method == Method::Code && !common.code_confirmed {
+    if state.is_done() && !common.code_confirmed {
         return Err(Error::CodeNotConfirmed);
     }
     let (keys, peer) = state.take_done().ok_or(Error::UnexpectedMessage)?;
@@ -474,10 +411,7 @@ fn finish(state: &mut impl Finishable, common: &mut Common, role: Role) -> Resul
 
 enum SourceState {
     AwaitHello,
-    AwaitTargetShare {
-        session_id: [u8; SESSION_ID_LEN],
-        commitment: Option<[u8; 32]>,
-    },
+    AwaitTargetShare,
     AwaitTargetKem {
         th1: [u8; 32],
         from_source: Zeroizing<[u8; 32]>,
@@ -498,14 +432,11 @@ pub struct SourcePairing {
 }
 
 impl SourcePairing {
-    /// `method` is the one the user picked; a hello for another is refused.
-    pub fn new(method: Method) -> Result<Self, Error> {
+    pub fn new() -> Result<Self, Error> {
         Ok(Self {
             common: Common {
-                method,
                 share: OwnShare::generate()?,
                 transcript: Transcript::new(),
-                psk: None,
                 code: None,
                 code_confirmed: false,
             },
@@ -513,9 +444,8 @@ impl SourcePairing {
         })
     }
 
-    /// Takes the target's next message (the hello first, as read from NFC,
-    /// the QR code or the cable) and returns the reply. Any error ends the
-    /// pairing.
+    /// Takes the target's next message (the hello first) and returns the
+    /// reply. Any error ends the pairing.
     pub fn handle(&mut self, msg: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         if matches!(self.state, SourceState::Failed) {
             return Err(Error::Failed);
@@ -537,49 +467,27 @@ impl SourcePairing {
                 if r.u16()? != SUITE_ID {
                     return Err(Error::UnsupportedSuite);
                 }
-                if Method::from_u8(r.u8()?)? != self.common.method {
-                    return Err(Error::WrongMethod);
-                }
                 let session_id = r.array::<SESSION_ID_LEN>()?;
-                let commitment = match self.common.method {
-                    Method::Code => None,
-                    _ => Some(r.array::<32>()?),
-                };
-                if self.common.method == Method::Qr {
-                    self.common.psk = Some(Zeroizing::new(r.array::<32>()?));
-                }
                 r.end()?;
-                let public_len = msg.len() - if self.common.psk.is_some() { 32 } else { 0 };
-                self.common.transcript.absorb(&msg[..public_len]);
+                self.common.transcript.absorb(msg);
 
                 let reply = Writer::new()
                     .u8(SOURCE_COMMIT)
                     .fixed(&session_id)
-                    .fixed(&crate::pairing::commitment(
+                    .fixed(&commitment(
                         Role::Source,
                         &session_id,
                         &self.common.share.encoded,
                     ))
                     .finish();
                 self.common.transcript.absorb(&reply);
-                self.state = SourceState::AwaitTargetShare {
-                    session_id,
-                    commitment,
-                };
+                self.state = SourceState::AwaitTargetShare;
                 Ok(Some(reply))
             }
-            SourceState::AwaitTargetShare {
-                session_id,
-                commitment: expected,
-            } => {
+            SourceState::AwaitTargetShare => {
                 let mut r = open(msg, TARGET_SHARE)?;
                 let share = r.take(SHARE_LEN)?;
                 r.end()?;
-                if let Some(expected) = expected {
-                    if !ct_eq(&commitment(Role::Target, &session_id, share), &expected) {
-                        return Err(Error::CommitmentMismatch);
-                    }
-                }
                 let peer = PeerShare::parse(share);
                 self.common.transcript.absorb(msg);
                 let own_share = self.common.share.encoded.clone();
@@ -590,7 +498,6 @@ impl SourcePairing {
                     hpke::system_rng()?,
                     &peer.xwing_pk,
                     &hpke_info(Role::Source, &th1),
-                    self.common.psk(),
                 )?;
                 let from_source = hpke::export(&ctx, EXPORTER_CONTEXT)?;
                 self.common.transcript.absorb(&enc_source);
@@ -621,7 +528,6 @@ impl SourcePairing {
                     enc_target,
                     &self.common.share.xwing,
                     &hpke_info(Role::Target, &th1),
-                    self.common.psk(),
                 )?;
                 let from_target = hpke::export(&ctx, EXPORTER_CONTEXT)?;
                 self.common.transcript.absorb(enc_target);
@@ -642,7 +548,7 @@ impl SourcePairing {
         }
     }
 
-    /// For the code method, once both shares are known: the six digits to show.
+    /// Once both shares are known: the six digits to show.
     pub fn code(&self) -> Option<String> {
         self.common.code.clone()
     }
@@ -652,8 +558,8 @@ impl SourcePairing {
         self.common.confirm_code()
     }
 
-    /// The paired session, once the handshake is complete (and, for the code
-    /// method, the code confirmed). Can be taken once.
+    /// The paired session, once the handshake is complete and the code
+    /// confirmed. Can be taken once.
     pub fn finish(&mut self) -> Result<Session, Error> {
         finish(&mut self.state, &mut self.common, Role::Source)
     }

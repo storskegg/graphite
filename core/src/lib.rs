@@ -4,8 +4,8 @@
 //! decides what they are. See `docs/design.md` (Pairing, Cryptography) and
 //! `docs/media.md` (the manifest).
 //!
-//! - [`TargetPairing`] / [`SourcePairing`]: pairing by NFC, QR or six-digit code,
-//!   ending in a [`Session`].
+//! - [`TargetPairing`] / [`SourcePairing`]: pairing over the cable, checked by
+//!   a six-digit code, ending in a [`Session`].
 //! - [`Session`]: chunked XChaCha20-Poly1305 each way, ML-DSA-65 signed
 //!   [`Manifest`] (source), [`Plan`] and [`Receipt`] (target).
 //! - [`FileHasher`]: streaming BLAKE3 of file contents.
@@ -27,7 +27,7 @@ pub use document::{
 };
 pub use error::Error;
 pub use hash::FileHasher;
-pub use pairing::{Method, SourcePairing, TargetPairing};
+pub use pairing::{SourcePairing, TargetPairing};
 pub use session::{Session, manifest_hash, plan_hash};
 pub use stream::{CHUNK_OVERHEAD, CHUNK_SIZE, Chunk};
 

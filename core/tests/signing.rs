@@ -2,9 +2,9 @@ mod common;
 
 use common::pair;
 use graphite_core::{
-    Error, FileDigest, FileHasher, Manifest, ManifestEntry, MetadataChoice, Method,
-    NotCopiedReason, Plan, PlanEntry, PlanStatus, PlanTotals, Receipt, ReceiptEntry, ReceiptStatus,
-    Session, manifest_hash, plan_hash, plan_totals,
+    Error, FileDigest, FileHasher, Manifest, ManifestEntry, MetadataChoice, NotCopiedReason, Plan,
+    PlanEntry, PlanStatus, PlanTotals, Receipt, ReceiptEntry, ReceiptStatus, Session,
+    manifest_hash, plan_hash, plan_totals,
 };
 
 fn digest(bytes: &[u8]) -> FileDigest {
@@ -114,7 +114,7 @@ struct Transfer {
 }
 
 fn transfer() -> Transfer {
-    let (source, target) = pair(Method::Nfc);
+    let (source, target) = pair();
     let manifest = source.sign_manifest(&manifest3()).unwrap();
     let plan = target.sign_plan(&plan(&manifest), &manifest).unwrap();
     Transfer {
@@ -127,7 +127,7 @@ fn transfer() -> Transfer {
 
 #[test]
 fn manifest_signed_by_the_source_verifies_at_the_target() {
-    let (source, target) = pair(Method::Nfc);
+    let (source, target) = pair();
     let signed = source.sign_manifest(&manifest()).unwrap();
     assert_eq!(target.verify_manifest(&signed).unwrap(), manifest());
 }
@@ -385,7 +385,7 @@ fn any_change_to_a_signed_plan_is_rejected() {
 
 #[test]
 fn any_change_to_a_signed_manifest_is_rejected() {
-    let (source, target) = pair(Method::Nfc);
+    let (source, target) = pair();
     let signed = source.sign_manifest(&manifest()).unwrap();
     for i in [0, 10, signed.len() / 2, signed.len() - 1] {
         let mut tampered = signed.clone();
@@ -397,8 +397,8 @@ fn any_change_to_a_signed_manifest_is_rejected() {
 
 #[test]
 fn manifest_from_another_session_is_rejected() {
-    let (other_source, _) = pair(Method::Nfc);
-    let (_, target) = pair(Method::Nfc);
+    let (other_source, _) = pair();
+    let (_, target) = pair();
     let signed = other_source.sign_manifest(&manifest()).unwrap();
     assert_eq!(
         target.verify_manifest(&signed),
@@ -437,7 +437,7 @@ fn signatures_are_domain_separated() {
 
 #[test]
 fn unsafe_paths_are_refused() {
-    let (source, _) = pair(Method::Nfc);
+    let (source, _) = pair();
     for path in [
         "",
         "/sdcard/DCIM/a.jpg",
@@ -460,7 +460,7 @@ fn unsafe_paths_are_refused() {
 
 #[test]
 fn keeping_metadata_means_sent_equals_original() {
-    let (source, _) = pair(Method::Nfc);
+    let (source, _) = pair();
     let mut m = manifest();
     m.metadata = MetadataChoice::KeepAll;
     assert_eq!(source.sign_manifest(&m), Err(Error::InvalidManifest));
@@ -472,7 +472,7 @@ fn keeping_metadata_means_sent_equals_original() {
 
 /// The second copy of the duplicate is unticked: a plan and its receipt.
 fn unticked_transfer() -> (Transfer, Receipt) {
-    let (source, target) = pair(Method::Nfc);
+    let (source, target) = pair();
     let manifest = source.sign_manifest(&manifest3()).unwrap();
     let mut entries = plan_entries();
     entries[0].status = PlanStatus::Unticked;
@@ -568,7 +568,7 @@ fn source_sends_only_what_the_plan_asks_for() {
 
 #[test]
 fn date_added_round_trips_with_and_without_a_value() {
-    let (source, target) = pair(Method::Nfc);
+    let (source, target) = pair();
     for (taken, added) in [
         (None, None),
         (None, Some(1_600_000_000_000)),

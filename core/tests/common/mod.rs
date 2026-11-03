@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
-use graphite_core::{Method, Session, SourcePairing, TargetPairing};
+use graphite_core::{Session, SourcePairing, TargetPairing};
 
-/// Runs a whole pairing between an honest source and target, confirming the
-/// six-digit code when the method uses one.
-pub fn pair(method: Method) -> (Session, Session) {
-    let mut target = TargetPairing::new(method).unwrap();
-    let mut source = SourcePairing::new(method).unwrap();
+/// Runs a whole pairing between an honest source and target, with the user
+/// confirming the six-digit code on both.
+pub fn pair() -> (Session, Session) {
+    let mut target = TargetPairing::new().unwrap();
+    let mut source = SourcePairing::new().unwrap();
 
     let commit = source.handle(&target.hello()).unwrap().unwrap();
     let target_share = target.handle(&commit).unwrap().unwrap();
@@ -15,10 +15,8 @@ pub fn pair(method: Method) -> (Session, Session) {
     let source_confirm = source.handle(&target_kem).unwrap().unwrap();
     assert!(target.handle(&source_confirm).unwrap().is_none());
 
-    if method == Method::Code {
-        assert_eq!(source.code(), target.code());
-        source.confirm_code().unwrap();
-        target.confirm_code().unwrap();
-    }
+    assert_eq!(source.code(), target.code());
+    source.confirm_code().unwrap();
+    target.confirm_code().unwrap();
     (source.finish().unwrap(), target.finish().unwrap())
 }

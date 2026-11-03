@@ -232,11 +232,11 @@ mod tests {
         FileDigest, ManifestEntry, MetadataChoice, NotCopiedReason, PlanEntry, PlanStatus,
         ReceiptEntry, ReceiptStatus, plan_totals,
     };
-    use crate::{Method, SourcePairing, TargetPairing};
+    use crate::{SourcePairing, TargetPairing};
 
     fn pair() -> (Session, Session) {
-        let mut target = TargetPairing::new(Method::Nfc).unwrap();
-        let mut source = SourcePairing::new(Method::Nfc).unwrap();
+        let mut target = TargetPairing::new().unwrap();
+        let mut source = SourcePairing::new().unwrap();
         let mut msg = target.hello();
         while let Some(reply) = source.handle(&msg).unwrap() {
             match target.handle(&reply).unwrap() {
@@ -244,6 +244,8 @@ mod tests {
                 None => break,
             }
         }
+        source.confirm_code().unwrap();
+        target.confirm_code().unwrap();
         (source.finish().unwrap(), target.finish().unwrap())
     }
 

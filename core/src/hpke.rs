@@ -1,7 +1,7 @@
 //! HPKE (RFC 9180) with the X-Wing KEM, as provided by hpke-rs on libcrux.
 //!
-//! graphite only uses HPKE's key schedule and secret export: the bulk data
-//! runs over [`crate::stream`]. The suite is fixed; the functions take a
+//! graphite only uses HPKE's base mode, its key schedule and secret export:
+//! the bulk data runs over [`crate::stream`]. The suite is fixed; the functions take a
 //! [`Suite`] only so that the RFC 9180 test vectors, which do not cover
 //! X-Wing, can run through the same code.
 
@@ -30,23 +30,6 @@ pub(crate) const SUITE: Suite = Suite {
 pub(crate) const XWING_PUBLIC_KEY_LEN: usize = 1216;
 pub(crate) const XWING_ENC_LEN: usize = 1120;
 
-/// A PSK and its identifier, both non-empty (RFC 9180, section 5.1.2).
-pub(crate) struct Psk<'a> {
-    pub psk: &'a [u8],
-    pub id: &'a [u8],
-}
-
-fn mode(psk: &Option<Psk>) -> Mode {
-    if psk.is_some() { Mode::Psk } else { Mode::Base }
-}
-
-fn psk_parts<'a>(psk: &'a Option<Psk>) -> (Option<&'a [u8]>, Option<&'a [u8]>) {
-    match psk {
-        Some(p) => (Some(p.psk), Some(p.id)),
-        None => (None, None),
-    }
-}
-
 pub(crate) fn generate_key_pair(suite: Suite) -> Result<(HpkePrivateKey, Vec<u8>), Error> {
     let mut hpke = Hpke::<HpkeLibcrux>::try_new(Mode::Base, suite.kem, suite.kdf, suite.aead)
         .map_err(|_| Error::Randomness)?;
@@ -64,12 +47,10 @@ pub(crate) fn setup_sender<R: TryCryptoRng + 'static>(
     rng: R,
     pk_r: &[u8],
     info: &[u8],
-    psk: Option<Psk>,
 ) -> Result<(Vec<u8>, Context<HpkeLibcrux<R>>), Error> {
     let mut hpke =
-        Hpke::<HpkeLibcrux<R>>::new_with_rng(mode(&psk), suite.kem, suite.kdf, suite.aead, rng);
-    let (p, id) = psk_parts(&psk);
-    hpke.setup_sender(&HpkePublicKey::new(pk_r.to_vec()), info, p, id, None)
+        Hpke::<HpkeLibcrux<R>>::new_with_rng(Mode::Base, suite.kem, suite.kdf, suite.aead, rng);
+    hpke.setup_sender(&HpkePublicKey::new(pk_r.to_vec()), info, None, None, None)
         .map_err(|_| Error::Crypto)
 }
 
@@ -78,14 +59,12 @@ pub(crate) fn setup_receiver(
     enc: &[u8],
     sk_r: &HpkePrivateKey,
     info: &[u8],
-    psk: Option<Psk>,
 ) -> Result<Context<HpkeLibcrux>, Error> {
     // The receiver draws no randomness; the PRNG is only there because hpke-rs wants one.
     let prng = HpkeLibcrux::try_prng().map_err(|_| Error::Randomness)?;
     let hpke =
-        Hpke::<HpkeLibcrux>::new_with_rng(mode(&psk), suite.kem, suite.kdf, suite.aead, prng);
-    let (p, id) = psk_parts(&psk);
-    hpke.setup_receiver(enc, sk_r, info, p, id, None)
+        Hpke::<HpkeLibcrux>::new_with_rng(Mode::Base, suite.kem, suite.kdf, suite.aead, prng);
+    hpke.setup_receiver(enc, sk_r, info, None, None, None)
         .map_err(|_| Error::Crypto)
 }
 
@@ -110,7 +89,7 @@ pub(crate) fn system_rng() -> Result<hpke_rs::libcrux::HpkeLibcruxPrng, Error> {
 #[cfg(test)]
 mod tests {
     //! RFC 9180 (cfrg/draft-irtf-cfrg-hpke test-vectors.json, filtered to
-    //! DHKEM(X25519) in base and PSK modes), draft-ietf-hpke-pq (hpkewg/hpke-pq
+    //! DHKEM(X25519) in base mode), draft-ietf-hpke-pq (hpkewg/hpke-pq
     //! test-vectors.json, the X-Wing suites) and the X-Wing draft's own KEM
     //! vectors (draft-connolly-cfrg-xwing-kem spec/test-vectors.json).
 
@@ -169,18 +148,7 @@ mod tests {
         let Some(suite) = suite_of(v) else {
             return false;
         };
-        let psk_bytes = v.get("psk").map(hex);
-        let psk_id = v.get("psk_id").map(hex);
-        let psk = || {
-            psk_bytes.as_ref().map(|p| Psk {
-                psk: p,
-                id: psk_id.as_ref().unwrap(),
-            })
-        };
-        assert_eq!(
-            v["mode"].as_u64().unwrap(),
-            if psk_bytes.is_some() { 1 } else { 0 }
-        );
+        assert_eq!(v["mode"].as_u64().unwrap(), 0, "base mode only");
 
         let (sk_r, pk_r) = derive_key_pair(suite, &hex(&v["ikmR"]));
         assert_eq!(pk_r, hex(&v["pkRm"]));
@@ -188,9 +156,9 @@ mod tests {
 
         let info = hex(&v["info"]);
         let (enc, mut sender) =
-            setup_sender(suite, FixedRng(hex(&v["ikmE"])), &pk_r, &info, psk()).unwrap();
+            setup_sender(suite, FixedRng(hex(&v["ikmE"])), &pk_r, &info).unwrap();
         assert_eq!(enc, hex(&v["enc"]));
-        let mut receiver = setup_receiver(suite, &enc, &sk_r, &info, psk()).unwrap();
+        let mut receiver = setup_receiver(suite, &enc, &sk_r, &info).unwrap();
 
         for e in v["encryptions"].as_array().unwrap() {
             let (aad, pt, ct) = (hex(&e["aad"]), hex(&e["pt"]), hex(&e["ct"]));
@@ -210,21 +178,19 @@ mod tests {
     }
 
     #[test]
-    fn rfc9180_x25519_base_and_psk() {
-        let vectors: Value = serde_json::from_str(include_str!(
-            "../tests/vectors/rfc9180-x25519-base-psk.json"
-        ))
-        .unwrap();
-        let vectors = vectors.as_array().unwrap();
-        let checked = vectors.iter().filter(|v| check(v)).count();
-        // HKDF-SHA256 and -SHA512 with AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305
-        // and export-only, in both modes.
-        assert_eq!(checked, 16);
-        let psk = vectors
+    fn rfc9180_x25519_base() {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../tests/vectors/rfc9180-x25519-base.json"))
+                .unwrap();
+        let checked = vectors
+            .as_array()
+            .unwrap()
             .iter()
-            .filter(|v| v["mode"] == 1 && suite_of(v).is_some())
+            .filter(|v| check(v))
             .count();
-        assert_eq!(psk, 8);
+        // HKDF-SHA256 and -SHA512 with AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305
+        // and export-only.
+        assert_eq!(checked, 8);
     }
 
     #[test]
@@ -268,45 +234,21 @@ mod tests {
         assert_eq!(SUITE.aead as u16, 0x0003);
         let (_, pk) = generate_key_pair(SUITE).unwrap();
         assert_eq!(pk.len(), XWING_PUBLIC_KEY_LEN);
-        let (enc, _) = setup_sender(SUITE, system_rng().unwrap(), &pk, b"", None).unwrap();
+        let (enc, _) = setup_sender(SUITE, system_rng().unwrap(), &pk, b"").unwrap();
         assert_eq!(enc.len(), XWING_ENC_LEN);
     }
 
     #[test]
-    fn psk_mode_needs_the_same_psk_on_both_sides() {
+    fn exports_agree_only_with_the_same_info_and_key() {
         let (sk, pk) = generate_key_pair(SUITE).unwrap();
-        let good = Psk {
-            psk: &[1; 32],
-            id: b"id",
-        };
-        let (enc, sender) =
-            setup_sender(SUITE, system_rng().unwrap(), &pk, b"info", Some(good)).unwrap();
-        let ok = setup_receiver(
-            SUITE,
-            &enc,
-            &sk,
-            b"info",
-            Some(Psk {
-                psk: &[1; 32],
-                id: b"id",
-            }),
-        )
-        .unwrap();
-        let bad = setup_receiver(
-            SUITE,
-            &enc,
-            &sk,
-            b"info",
-            Some(Psk {
-                psk: &[2; 32],
-                id: b"id",
-            }),
-        )
-        .unwrap();
-        let base = setup_receiver(SUITE, &enc, &sk, b"info", None).unwrap();
+        let (other_sk, _) = generate_key_pair(SUITE).unwrap();
+        let (enc, sender) = setup_sender(SUITE, system_rng().unwrap(), &pk, b"info").unwrap();
         let x = export(&sender, b"x").unwrap();
-        assert_eq!(*export(&ok, b"x").unwrap(), *x);
-        assert_ne!(*export(&bad, b"x").unwrap(), *x);
-        assert_ne!(*export(&base, b"x").unwrap(), *x);
+        let same = setup_receiver(SUITE, &enc, &sk, b"info").unwrap();
+        assert_eq!(*export(&same, b"x").unwrap(), *x);
+        let other_info = setup_receiver(SUITE, &enc, &sk, b"inf0").unwrap();
+        assert_ne!(*export(&other_info, b"x").unwrap(), *x);
+        let other_key = setup_receiver(SUITE, &enc, &other_sk, b"info").unwrap();
+        assert_ne!(*export(&other_key, b"x").unwrap(), *x);
     }
 }

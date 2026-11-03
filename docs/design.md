@@ -207,8 +207,8 @@ the user having seen it.
 
 | Layer | Choice |
 |---|---|
-| Key exchange | HPKE (RFC 9180) with X-Wing (X25519 + ML-KEM-768), one encapsulation each way; PSK mode for QR pairing |
-| Transcript | BLAKE3 over version, suite, the hello (without the QR secret), both shares and both encapsulations; HPKE `info` carries the transcript hash up to the shares |
+| Key exchange | HPKE (RFC 9180) with X-Wing (X25519 + ML-KEM-768), one encapsulation each way, base mode |
+| Transcript | BLAKE3 over version, suite, the hello, both shares and both encapsulations; HPKE `info` carries the transcript hash up to the shares |
 | Session keys | From both HPKE exports and the full transcript hash: one stream key and one confirmation key per direction; key confirmation both ways |
 | Bulk data | XChaCha20-Poly1305, at most 1 MiB per chunk. The nonce is never sent: it is built from the sender, the chunk counter and the last-chunk flag, so the flag is authenticated |
 | Signatures | ML-DSA-65 (FIPS 204), hedged, over the transcript hash and the document, with context strings `graphite/1 manifest`, `graphite/1 plan` and `graphite/1 receipt`; per-session keys bound by pairing. Source signs the manifest; target signs the plan (carrying the manifest's hash) before the copy and the receipt (carrying the manifest's and the plan's hashes) after it |
@@ -223,9 +223,7 @@ later. HPKE comes from hpke-rs with its libcrux backend, so ML-KEM **and X25519*
 (inside X-Wing) are libcrux's formally verified code; ML-DSA is libcrux too.
 RustCrypto provides XChaCha20-Poly1305, and the official `blake3` crate the hashing.
 Every crate, with version and reason, and which parts are covered by official test
-vectors, is listed in [core/README.md](../core/README.md). One gap: no official
-vectors exist for HPKE PSK mode with X-Wing, so that combination is covered by our
-own tests and by the PSK vectors for DHKEM(X25519), which use the same key schedule.
+vectors, is listed in [core/README.md](../core/README.md).
 
 ## Threat model
 

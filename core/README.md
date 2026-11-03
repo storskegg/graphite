@@ -19,12 +19,11 @@ For Android, `blake3` compiles C for NEON, so point `cc` at the NDK, for example
 
 ## API
 
-- `TargetPairing` (new phone) and `SourcePairing` (old phone): `new(method)`,
-  then `handle(message) -> reply`, until `finish() -> Session`. The target's
-  `hello()` is the first message: the NFC card's answer, the QR code's content,
-  or the first message on the cable. For the code method, `code()` gives the
-  six digits and `confirm_code()` records that the user saw them match;
-  `finish()` refuses until then.
+- `TargetPairing` (new phone) and `SourcePairing` (old phone): `new()`, then
+  `handle(message) -> reply`, until `finish() -> Session`. The target's
+  `hello()` is the first message on the cable. Once both key shares are known,
+  `code()` gives the six digits and `confirm_code()` records that the user saw
+  them match on both phones; `finish()` refuses until then.
 - `Session`: `seal(chunk, last)` / `open(chunk)` / `finish_receiving()` for the
   stream; `sign_manifest` / `verify_manifest` (source signs, target verifies);
   `sign_plan` / `verify_plan` and `sign_receipt` / `verify_receipt` (target
@@ -37,16 +36,20 @@ Every error is final for the pairing or stream that raised it.
 
 ## Protocol
 
-Six messages for every method; only the channel of the first two differs:
+Pairing runs over the USB cable only, checked by a six-digit comparison. Six
+messages:
 
-| # | Message | NFC | QR | Code |
-|---|---|---|---|---|
-| 1 | Target hello: version, suite, method, session ID, `H(share_T)`, QR secret | NFC card | QR code | cable (no hash) |
-| 2 | Source commit: session ID, `H(share_S)` | NFC reply | cable | cable |
-| 3 | Target share | cable | cable | cable |
-| 4 | Source share, `enc_S` | cable | cable | cable |
-| 5 | Target `enc_T`, confirmation | cable | cable | cable |
-| 6 | Source confirmation | cable | cable | cable |
+| # | Message |
+|---|---|
+| 1 | Target hello: version, suite, session ID |
+| 2 | Source commit: session ID, `H(share_S)` |
+| 3 | Target share |
+| 4 | Source share, `enc_S` |
+| 5 | Target `enc_T`, confirmation |
+| 6 | Source confirmation |
+
+The hello has no method field: the version and suite are what a future
+change would bump.
 
 A key share is an ephemeral X-Wing public key, an ephemeral ML-DSA-65
 verification key and a nonce. `H` is a BLAKE3 commitment over role, session ID
@@ -57,13 +60,13 @@ and share.
   single encapsulation the target would have no proof of who it is talking to;
   with two, each side's keys depend on a secret only the genuine owner of the
   peer's authenticated share can recover.
-- **QR**: the 256-bit secret is the HPKE PSK in both directions (PSK mode); the
-  target never sends it over the cable.
+- **HPKE base mode** only: there is no pre-shared key.
 - **Code**: the source commits before seeing the target's share, so no one can
   pick a share to steer the code. The six digits come from the transcript hash
-  and are only compared by the user; they never feed a key.
+  and are only compared by the user; they never feed a key. Pairing cannot
+  finish until the user has confirmed the code on both phones.
 - **Transcript**: BLAKE3 over the protocol version, the suite description,
-  the hello (without the QR secret), both shares and both encapsulations. HPKE
+  the hello, both shares and both encapsulations. HPKE
   `info` carries the transcript hash up to the shares. The session keys come
   from both HPKE exports and the full transcript hash: one stream key per
   direction and one confirmation key per direction.
@@ -91,7 +94,7 @@ Official test vectors, in `tests/vectors/`:
 
 | Vectors | Source | What they check |
 |---|---|---|
-| RFC 9180, DHKEM(X25519) suites, base and PSK modes (16 vectors) | cfrg/draft-irtf-cfrg-hpke `test-vectors.json` @ b1f7cb0, filtered | hpke-rs's key schedule, both modes, seal/open, export, through our HPKE wrapper |
+| RFC 9180, DHKEM(X25519) suites, base mode (8 vectors) | cfrg/draft-irtf-cfrg-hpke `test-vectors.json` @ b1f7cb0, filtered | hpke-rs's key schedule, seal/open, export, through our HPKE wrapper |
 | draft-ietf-hpke-pq, both X-Wing suites (2 vectors, base mode) | hpkewg/hpke-pq `test-vectors.json` @ 6433c8f | full HPKE with X-Wing, including graphite's suite (0x647a, 0x0001, 0x0003), through our wrapper |
 | X-Wing KEM (3 vectors) | dconnolly/draft-connolly-cfrg-xwing-kem `spec/test-vectors.json` @ 984c2f7 | key generation from seed, encapsulation, decapsulation |
 | ML-DSA-65 keyGen (25) and sigVer, external pure interface (15) | usnistgov/ACVP-Server @ 975de31e, filtered | key generation from seed; verification with context strings, including invalid signatures |
@@ -100,16 +103,13 @@ Official test vectors, in `tests/vectors/`:
 
 Our own tests only (no official vectors exist for these):
 
-- HPKE PSK mode **with X-Wing**: the official vectors cover PSK mode only with
-  DHKEM(X25519); X-Wing vectors are base mode. The key schedule code is the
-  same for both KEMs.
-- The pairing protocol: all three methods end to end; a cable
-  man-in-the-middle caught by the NFC hashes (both directions) and by the QR
-  hash; a source without the QR secret failing key confirmation; a code
-  man-in-the-middle showing different codes; a source unable to change its
-  share after committing; tampered encapsulation and confirmation tags;
-  reflected confirmation; wrong method, version, suite, session; malformed and
-  out-of-order messages; code confirmation required to finish.
+- The pairing protocol: end to end; a man-in-the-middle in the cable showing
+  different codes, whether it runs a pairing with each phone or only swaps the
+  target's share; a source unable to change its share after committing;
+  tampered encapsulation and confirmation tags; reflected confirmation; wrong
+  version, suite, session; malformed and out-of-order messages; the code
+  appearing only once both shares are known, and confirmation of it required
+  to finish.
 - The stream: truncation (missing last chunk, cut chunk, short chunk), the
   last flag cleared or set, reordering, replay, cross-direction replay, replay
   from another session, tampering, data after the last chunk, the 1 MiB limit,
@@ -135,9 +135,9 @@ Direct dependencies (versions as locked in `Cargo.lock`):
 | `libcrux-ml-dsa` | 0.0.11 | ML-DSA-65 (FIPS 204), libcrux, only the `mldsa65` feature |
 | `chacha20poly1305` | 0.11.0 | RustCrypto XChaCha20-Poly1305 for the stream; `zeroize` wipes the key on drop |
 | `blake3` | 1.8.7 | the official BLAKE3 crate: content hashes, transcript, commitments, key derivation, confirmation tags; `zeroize` feature |
-| `getrandom` | 0.4.3 | system randomness for session IDs, nonces, the QR secret and ML-DSA seeds; already in the tree through `rand` |
+| `getrandom` | 0.4.3 | system randomness for session IDs, nonces and ML-DSA seeds; already in the tree through `rand` |
 | `subtle` | 2.6.1 | constant-time comparison of commitments, confirmation tags and manifest hashes |
-| `zeroize` | 1.9.1 | wiping secrets: derived keys, the QR secret, ML-DSA signing keys, HPKE exports |
+| `zeroize` | 1.9.1 | wiping secrets: derived keys, ML-DSA signing keys, HPKE exports |
 
 Dev-dependencies: `serde_json` 1.0 (reading the vector files) and `hpke-rs`
 again with `hazmat`, to compare derived private keys with the vectors.

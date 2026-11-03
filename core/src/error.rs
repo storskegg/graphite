@@ -13,13 +13,11 @@ pub enum Error {
     UnsupportedVersion,
     /// The peer uses another cipher suite.
     UnsupportedSuite,
-    /// The peer started a different pairing method, or the call does not apply to this method.
-    WrongMethod,
     /// The message belongs to another pairing session.
     SessionMismatch,
     /// A key share does not match the hash committed to earlier.
     CommitmentMismatch,
-    /// The peer derived different keys: a man-in-the-middle, a wrong QR secret, or tampering.
+    /// The peer derived different keys: a man-in-the-middle or tampering.
     KeyConfirmationFailed,
     /// The six-digit code has not been confirmed by the user.
     CodeNotConfirmed,
