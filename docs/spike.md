@@ -243,9 +243,11 @@ looked at, never the numbers themselves.
 `content query --uri content://com.android.blockednumber/blocked` returns the whole
 list: 1307 rows on the Pixel 7 Pro, 46 on the Pixel 10. Columns: `_id`,
 `original_number`, `e164_number`. The provider does not allow `count(*)`.
-Reading it from the spike app while it holds the SMS role was **not run**: the
-shell already reads it, so graphite's adb link is enough, and holding the role on
-the source would risk a missed MMS for no gain.
+From the spike app on the Pixel 7 Pro: without the role, the query throws
+`SecurityException: Caller must be system, default dialer or default SMS app`;
+holding the SMS role (taken and given back with `cmd role`, held 4 s, nothing
+arrived meanwhile) it returns the same 1307 rows and columns. So either route
+works; the shell needs no role.
 
 **Writing on the target (Pixel 10, GrapheneOS).** Also from the shell, no SMS role:
 

@@ -47,6 +47,7 @@ class MainActivity : Activity() {
         "sms" to { SmsTest(this).sms() },
         "mms" to { SmsTest(this).mms() },
         "calls" to { SmsTest(this).calls() },
+        "blocked" to { SmsTest(this).blocked() },
         "cleanup" to { SmsTest(this).cleanup() },
     )
 

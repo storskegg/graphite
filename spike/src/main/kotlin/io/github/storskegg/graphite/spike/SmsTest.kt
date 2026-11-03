@@ -146,6 +146,17 @@ class SmsTest(val a: MainActivity) {
         }
     }
 
+    // Counts only: never logs the user's blocked numbers.
+    fun blocked() {
+        role()
+        a.log("canCurrentUserBlockNumbers=${runCatching { android.provider.BlockedNumberContract.canCurrentUserBlockNumbers(a) }.getOrElse { it.toString() }}")
+        runCatching {
+            cr.query(android.provider.BlockedNumberContract.BlockedNumbers.CONTENT_URI, null, null, null, null)?.use {
+                a.log("blocked list: ${it.count} rows, columns ${it.columnNames.joinToString()}")
+            } ?: a.log("blocked list: null cursor")
+        }.onFailure { a.log("blocked list: $it") }
+    }
+
     // Deletes exactly the recorded rows, and only if they still carry the fake number.
     fun cleanup() {
         role()
