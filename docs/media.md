@@ -49,9 +49,20 @@ target alone decides what to request.
 4. **Target requests** every manifest entry whose hash it does not hold, once per hash.
 5. **Target writes the file, then checks the hash, then publishes it.** MediaStore
    entry inserted with `IS_PENDING = 1` into the same relative folder; bytes
-   streamed in; `fsync`; BLAKE3 recomputed and compared to the manifest; only then
-   `IS_PENDING = 0`, `DATE_TAKEN` and modification time restored. A mismatch deletes
+   streamed in; `fsync`; BLAKE3 recomputed and compared to the manifest; the
+   source's modification time set on the file (`File.setLastModified`, which works
+   on the app's own pending file); only then `IS_PENDING = 0`. A mismatch deletes
    the pending entry and retries once.
+
+   The publish scan sets `DATE_MODIFIED` from that modification time. The app
+   cannot write `DATE_TAKEN`: MediaStore overwrites it at publish and ignores later
+   updates. The scanner derives it from the file's EXIF (and from the modification
+   time when EXIF has no time-zone offset), so identical bytes plus the restored
+   modification time give the same `DATE_TAKEN` as on the source. The manifest's
+   `DATE_TAKEN` is compared after publishing; an item whose source value came from
+   the app that saved it, not from its bytes, ends up with none, galleries sort it
+   by modification time, and the receipt notes it. See
+   [spike.md](spike.md#5-mediastore-dates).
 6. **Target signs a receipt** listing what was copied, skipped as already present,
    and failed, and sends it back. Both phones show the same summary.
 
