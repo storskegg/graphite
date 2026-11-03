@@ -150,10 +150,11 @@ twice. Apps can't change the USB role (it needs the system permission
 controlled by" → "This device" on the new phone); that wording is not yet
 tested by a user.
 
-Known issue: **videos lose `DATE_TAKEN`** with either stripping choice. The
-stripper keeps the `mvhd` times, but Android's scanner gives a stripped MP4 no
-date (checked on both phones with the same file before and after stripping).
-Tracked with `strip/`.
+Fixed in `strip/` (9768c6b, stripper version 2): **stripped videos had no
+`DATE_TAKEN`** (nor a duration). Each removed `ilst` item became its own `free`
+atom, and Android's MP4 extractor rejects an `ilst` holding two items of the
+same type. Removed items now share one `free` atom; checked on both phones.
+Videos sent by an older build were stripped by version 1 and still lack the date.
 
 Open question: **does wireless debugging on the old phone break the cable
 install?** The install that worked had two changes at once: the fix for the
