@@ -118,6 +118,35 @@ At the end the app revokes debugging authorizations and turns USB debugging off.
 
 On GrapheneOS the USB-C port setting must allow data; the app checks and says so.
 
+## User authentication
+
+Before pairing, the user has to prove it is them **on both phones**. An unlocked
+phone left on a table should not be enough for someone to plug in a cable and pull
+files off it, or push files onto it.
+
+- **A secure screen lock is required.** If `KeyguardManager.isDeviceSecure` is false
+  (no PIN, pattern or password), the app explains why and stops.
+- **The check is Android's own prompt**, `BiometricPrompt` allowing a strong
+  biometric or the device PIN, pattern or password
+  (`BIOMETRIC_STRONG | DEVICE_CREDENTIAL`, available from Android 11). graphite
+  never sees or handles the PIN.
+- **It is enforced in hardware, not just in the UI.** Each phone keeps a Keystore
+  signing key created with `setUserAuthenticationParameters(0,
+  AUTH_BIOMETRIC_STRONG | AUTH_DEVICE_CREDENTIAL)`, so every single use needs a
+  fresh authentication. The prompt unlocks one signature over a fresh nonce for
+  this session (`BiometricPrompt.CryptoObject`). The pairing, cable-setup and
+  file-access code only runs once that signature verifies. Launching a later screen
+  directly, for example with `am start`, gets nothing, because there is no
+  signature to show.
+- **When it is asked:**
+  - on each phone before pairing, and before graphite uses the adb link to set up
+    the other phone;
+  - again on the source before removal from the source;
+  - again whenever the screen locks or graphite leaves the foreground during a
+    session. Unlocking the phone does not count as authenticating to graphite.
+- **What it does not cover:** someone who knows the PIN, or a user made to unlock
+  under duress.
+
 ## Pairing
 
 Pairing authenticates the cable link. A cable alone proves nothing.
