@@ -1,18 +1,24 @@
 use subtle::ConstantTimeEq;
 
 use crate::codec::{Reader, Writer};
-use crate::document::{Manifest, Receipt};
+use crate::document::{Manifest, Plan, Receipt};
 use crate::pairing::Keys;
 use crate::signing::{self, SIGNATURE_LEN, SigningKey, VERIFICATION_KEY_LEN};
 use crate::stream::{Chunk, StreamOpener, StreamSealer};
 use crate::{Error, Role};
 
 const MANIFEST_CONTEXT: &[u8] = b"graphite/1 manifest";
+const PLAN_CONTEXT: &[u8] = b"graphite/1 plan";
 const RECEIPT_CONTEXT: &[u8] = b"graphite/1 receipt";
 
-/// The hash a receipt quotes to say which signed manifest it answers.
+/// The hash a plan or receipt quotes to say which signed manifest it answers.
 pub fn manifest_hash(signed_manifest: &[u8]) -> [u8; 32] {
     blake3::derive_key("graphite/1 manifest hash", signed_manifest)
+}
+
+/// The hash a receipt quotes to say which signed plan it follows.
+pub fn plan_hash(signed_plan: &[u8]) -> [u8; 32] {
+    blake3::derive_key("graphite/1 plan hash", signed_plan)
 }
 
 /// A paired session: one stream each way and the two signing keys that
@@ -112,22 +118,197 @@ impl Session {
         Ok(manifest)
     }
 
-    /// Target: signs the receipt for this session.
-    pub fn sign_receipt(&self, receipt: &Receipt) -> Result<Vec<u8>, Error> {
+    /// Target: signs the plan for `signed_manifest`, after checking the
+    /// manifest's signature, that the plan answers it, and the plan's rules.
+    pub fn sign_plan(&self, plan: &Plan, signed_manifest: &[u8]) -> Result<Vec<u8>, Error> {
         self.require(Role::Target)?;
-        receipt.validate()?;
+        let manifest = self.verify_manifest(signed_manifest)?;
+        same(
+            &plan.manifest_hash,
+            &manifest_hash(signed_manifest),
+            Error::ManifestMismatch,
+        )?;
+        plan.validate(&manifest)?;
+        self.sign(PLAN_CONTEXT, plan.encode())
+    }
+
+    /// Source: checks the target's signature and that the plan answers
+    /// `signed_manifest`, the manifest this side sent, entry by entry.
+    pub fn verify_plan(&self, signed: &[u8], signed_manifest: &[u8]) -> Result<Plan, Error> {
+        self.require(Role::Source)?;
+        let plan = Plan::decode(self.verify(PLAN_CONTEXT, signed)?)?;
+        let manifest = own_document(signed_manifest).and_then(Manifest::decode)?;
+        same(
+            &plan.manifest_hash,
+            &manifest_hash(signed_manifest),
+            Error::ManifestMismatch,
+        )?;
+        plan.validate(&manifest)?;
+        Ok(plan)
+    }
+
+    /// Target: signs the receipt for `signed_manifest` and `signed_plan`
+    /// (this side's own plan for that manifest).
+    pub fn sign_receipt(
+        &self,
+        receipt: &Receipt,
+        signed_manifest: &[u8],
+        signed_plan: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.require(Role::Target)?;
+        let manifest = self.verify_manifest(signed_manifest)?;
+        let plan = own_document(signed_plan).and_then(Plan::decode)?;
+        let hash = manifest_hash(signed_manifest);
+        same(&plan.manifest_hash, &hash, Error::ManifestMismatch)?;
+        same(&receipt.manifest_hash, &hash, Error::ManifestMismatch)?;
+        same(
+            &receipt.plan_hash,
+            &plan_hash(signed_plan),
+            Error::PlanMismatch,
+        )?;
+        receipt.validate(&manifest)?;
         self.sign(RECEIPT_CONTEXT, receipt.encode())
     }
 
     /// Source: checks the target's signature and that the receipt answers
-    /// `signed_manifest`, the manifest this side sent.
-    pub fn verify_receipt(&self, signed: &[u8], signed_manifest: &[u8]) -> Result<Receipt, Error> {
+    /// `signed_manifest` (sent by this side) and follows `signed_plan`
+    /// (verified by this side), entry by entry.
+    pub fn verify_receipt(
+        &self,
+        signed: &[u8],
+        signed_manifest: &[u8],
+        signed_plan: &[u8],
+    ) -> Result<Receipt, Error> {
         self.require(Role::Source)?;
         let receipt = Receipt::decode(self.verify(RECEIPT_CONTEXT, signed)?)?;
-        receipt.validate()?;
-        if !bool::from(receipt.manifest_hash.ct_eq(&manifest_hash(signed_manifest))) {
-            return Err(Error::ReceiptMismatch);
-        }
+        let manifest = own_document(signed_manifest).and_then(Manifest::decode)?;
+        same(
+            &receipt.manifest_hash,
+            &manifest_hash(signed_manifest),
+            Error::ManifestMismatch,
+        )?;
+        same(
+            &receipt.plan_hash,
+            &plan_hash(signed_plan),
+            Error::PlanMismatch,
+        )?;
+        receipt.validate(&manifest)?;
         Ok(receipt)
+    }
+}
+
+/// The body of a document this side signed itself: parsed, not re-verified.
+fn own_document(signed: &[u8]) -> Result<&[u8], Error> {
+    let mut r = Reader::new(signed);
+    let body = r.bytes()?;
+    r.array::<SIGNATURE_LEN>()?;
+    r.end()?;
+    Ok(body)
+}
+
+fn same(a: &[u8; 32], b: &[u8; 32], error: Error) -> Result<(), Error> {
+    if bool::from(a.ct_eq(b)) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The source re-checks what the target signed. The public API will not
+    //! sign a plan or receipt that breaks the rules, so these sign one past it.
+
+    use super::*;
+    use crate::document::{
+        FileDigest, ManifestEntry, MetadataChoice, PlanEntry, PlanStatus, ReceiptEntry,
+        ReceiptStatus, plan_totals,
+    };
+    use crate::{Method, SourcePairing, TargetPairing};
+
+    fn pair() -> (Session, Session) {
+        let mut target = TargetPairing::new(Method::Nfc).unwrap();
+        let mut source = SourcePairing::new(Method::Nfc).unwrap();
+        let mut msg = target.hello();
+        while let Some(reply) = source.handle(&msg).unwrap() {
+            match target.handle(&reply).unwrap() {
+                Some(next) => msg = next,
+                None => break,
+            }
+        }
+        (source.finish().unwrap(), target.finish().unwrap())
+    }
+
+    fn manifest() -> Manifest {
+        let entry = |path: &str| ManifestEntry {
+            path: path.into(),
+            mime_type: "image/jpeg".into(),
+            date_taken_ms: None,
+            modified_ms: 0,
+            original: FileDigest {
+                size: 5,
+                blake3: [1; 32],
+            },
+            sent: FileDigest {
+                size: 5,
+                blake3: [1; 32],
+            },
+        };
+        Manifest {
+            metadata: MetadataChoice::KeepAll,
+            stripper_version: "1".into(),
+            files: vec![entry("DCIM/a.jpg"), entry("DCIM/b.jpg")],
+        }
+    }
+
+    #[test]
+    fn source_refuses_a_signed_plan_or_receipt_that_breaks_the_rules() {
+        let (source, target) = pair();
+        let signed_manifest = source.sign_manifest(&manifest()).unwrap();
+        let hash = manifest_hash(&signed_manifest);
+
+        let entries = vec![
+            PlanEntry {
+                index: 0,
+                status: PlanStatus::ToCopy,
+            },
+            PlanEntry {
+                index: 1,
+                status: PlanStatus::Present,
+            },
+        ];
+        let good = Plan {
+            manifest_hash: hash,
+            totals: plan_totals(&manifest(), &entries),
+            entries,
+        };
+        let signed_plan = target.sign_plan(&good, &signed_manifest).unwrap();
+
+        let mut duplicated = good.clone();
+        duplicated.entries[1].index = 0;
+        let mut wrong_totals = good.clone();
+        wrong_totals.totals.bytes_to_copy = 0;
+        for bad in [duplicated, wrong_totals] {
+            let signed = target.sign(PLAN_CONTEXT, bad.encode()).unwrap();
+            assert_eq!(
+                source.verify_plan(&signed, &signed_manifest),
+                Err(Error::InvalidPlan)
+            );
+        }
+
+        let missing = Receipt {
+            manifest_hash: hash,
+            plan_hash: plan_hash(&signed_plan),
+            entries: vec![ReceiptEntry {
+                index: 0,
+                status: ReceiptStatus::CopiedVerified,
+                note: String::new(),
+            }],
+        };
+        let signed = target.sign(RECEIPT_CONTEXT, missing.encode()).unwrap();
+        assert_eq!(
+            source.verify_receipt(&signed, &signed_manifest, &signed_plan),
+            Err(Error::InvalidReceipt)
+        );
     }
 }

@@ -1,7 +1,7 @@
 # graphite-core
 
 The Rust crypto core: pairing, session keys, the chunked encrypted stream,
-signed manifests and receipts, and file hashing. Synchronous, no I/O, a small
+signed manifests, plans and receipts, and file hashing. Synchronous, no I/O, a small
 API meant to be wrapped for Kotlin with uniffi later. The spec is
 [docs/design.md](../docs/design.md) (Pairing, Cryptography) and
 [docs/media.md](../docs/media.md) (the manifest).
@@ -27,7 +27,8 @@ For Android, `blake3` compiles C for NEON, so point `cc` at the NDK, for example
   `finish()` refuses until then.
 - `Session`: `seal(chunk, last)` / `open(chunk)` / `finish_receiving()` for the
   stream; `sign_manifest` / `verify_manifest` (source signs, target verifies);
-  `sign_receipt` / `verify_receipt` (target signs, source verifies).
+  `sign_plan` / `verify_plan` and `sign_receipt` / `verify_receipt` (target
+  signs, source verifies). `plan_totals` computes a plan's totals.
 - `FileHasher`: streaming BLAKE3.
 
 Every error is final for the pairing or stream that raised it.
@@ -69,10 +70,16 @@ and share.
   byte travels in front of the ciphertext and is authenticated through the
   nonce.
 - **Signatures**: ML-DSA-65, hedged, over `transcript hash || document`, with
-  FIPS 204 context strings `graphite/1 manifest` and `graphite/1 receipt`. A
-  receipt carries the hash of the signed manifest it answers. Paths must be
-  relative with no `.`, `..` or empty components; under **Keep all metadata**
-  sent and original must be the same.
+  FIPS 204 context strings `graphite/1 manifest` (source), `graphite/1 plan`
+  and `graphite/1 receipt` (both target). The plan carries the hash of the
+  signed manifest; the receipt carries the hashes of the signed manifest and
+  plan. Plan and receipt name every manifest entry exactly once, by index. A
+  plan's totals must add up: counts per status, and bytes to copy as the sum
+  of the sent sizes of the entries to copy, each sent hash counted once (same
+  bytes at two paths are copied once). Signing checks the same rules as
+  verifying, and the target re-verifies the manifest before signing a plan or
+  receipt for it. Paths must be relative with no `.`, `..` or empty
+  components; under **Keep all metadata** sent and original must be the same.
 
 ## What the tests cover
 
@@ -103,9 +110,13 @@ Our own tests only (no official vectors exist for these):
   last flag cleared or set, reordering, replay, cross-direction replay, replay
   from another session, tampering, data after the last chunk, the 1 MiB limit,
   and that a failed stream stays failed.
-- Manifest and receipt signing: round trips, any changed byte, another
-  session's signature, each role signing only its own document, domain
-  separation between the two, a receipt for another manifest, unsafe paths.
+- Manifest, plan and receipt signing: round trips (every plan and receipt
+  status), any changed byte, another session's signature, each role signing
+  and verifying only its own documents, domain separation among all three
+  (plan presented as receipt and the reverse), a plan or receipt for another
+  manifest, a receipt for another plan, missing, duplicated or unknown
+  entries, wrong totals, a validly signed but invalid plan or receipt refused
+  by the source, unsafe paths.
 
 ## Crates
 

@@ -142,7 +142,7 @@ the user having seen it.
 | Transcript | BLAKE3 over version, suite, the hello (without the QR secret), both shares and both encapsulations; HPKE `info` carries the transcript hash up to the shares |
 | Session keys | From both HPKE exports and the full transcript hash: one stream key and one confirmation key per direction; key confirmation both ways |
 | Bulk data | XChaCha20-Poly1305, at most 1 MiB per chunk. The nonce is never sent: it is built from the sender, the chunk counter and the last-chunk flag, so the flag is authenticated |
-| Signatures | ML-DSA-65 (FIPS 204), hedged, over the transcript hash and the document, with context strings `graphite/1 manifest` and `graphite/1 receipt`; per-session keys bound by pairing. Source signs the manifest, target signs a receipt carrying the manifest's hash |
+| Signatures | ML-DSA-65 (FIPS 204), hedged, over the transcript hash and the document, with context strings `graphite/1 manifest`, `graphite/1 plan` and `graphite/1 receipt`; per-session keys bound by pairing. Source signs the manifest; target signs the plan (carrying the manifest's hash) before the copy and the receipt (carrying the manifest's and the plan's hashes) after it |
 | Content identity | BLAKE3 of each file's bytes (see [media.md](media.md)) |
 | Passphrases | None in a live transfer. Argon2id (RFC 9106) only for an optional encrypted export file |
 

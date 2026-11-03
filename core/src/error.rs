@@ -45,8 +45,14 @@ pub enum Error {
     WrongRole,
     /// A manifest breaks a rule: an unsafe path, or sent bytes differing from the original while keeping metadata.
     InvalidManifest,
-    /// The receipt is for a different manifest.
-    ReceiptMismatch,
+    /// A plan does not name every manifest entry exactly once, or its totals do not add up.
+    InvalidPlan,
+    /// A receipt does not name every manifest entry exactly once.
+    InvalidReceipt,
+    /// The plan or receipt answers a different manifest.
+    ManifestMismatch,
+    /// The receipt follows a different plan.
+    PlanMismatch,
 }
 
 impl fmt::Display for Error {

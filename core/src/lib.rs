@@ -7,7 +7,7 @@
 //! - [`TargetPairing`] / [`SourcePairing`]: pairing by NFC, QR or six-digit code,
 //!   ending in a [`Session`].
 //! - [`Session`]: chunked XChaCha20-Poly1305 each way, ML-DSA-65 signed
-//!   [`Manifest`] and [`Receipt`].
+//!   [`Manifest`] (source), [`Plan`] and [`Receipt`] (target).
 //! - [`FileHasher`]: streaming BLAKE3 of file contents.
 
 mod codec;
@@ -22,12 +22,13 @@ mod signing;
 mod stream;
 
 pub use document::{
-    FileDigest, Manifest, ManifestEntry, MetadataChoice, Outcome, Receipt, ReceiptEntry,
+    FileDigest, Manifest, ManifestEntry, MetadataChoice, NotCopiedReason, Plan, PlanEntry,
+    PlanStatus, PlanTotals, Receipt, ReceiptEntry, ReceiptStatus, plan_totals,
 };
 pub use error::Error;
 pub use hash::FileHasher;
 pub use pairing::{Method, SourcePairing, TargetPairing};
-pub use session::{Session, manifest_hash};
+pub use session::{Session, manifest_hash, plan_hash};
 pub use stream::{CHUNK_OVERHEAD, CHUNK_SIZE, Chunk};
 
 /// The protocol version, sent in the hello and bound into the transcript.
