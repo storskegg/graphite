@@ -25,6 +25,8 @@ data class Compared(
     /** The target file that matched, for verification. */
     val match: TargetFile? = null,
     val note: String = "",
+    /** The matched file's hash, when it is neither of the entry's (a copy stripped in an earlier run). */
+    val matchHash: String? = null,
 )
 
 /**
@@ -34,6 +36,7 @@ data class Compared(
  */
 object Comparison {
     const val WITH_METADATA = "already on the new phone, with its metadata"
+    const val WITHOUT_METADATA = "already on the new phone, without its metadata"
 
     /** Only target files whose size matches either size of some entry need hashing. */
     fun candidates(entries: List<ManifestEntry>, files: List<TargetFile>): List<TargetFile> {
@@ -47,9 +50,16 @@ object Comparison {
      * or null when it can't be read (then it matches nothing). Each candidate
      * is hashed at most once.
      */
-    fun compare(entries: List<ManifestEntry>, files: List<TargetFile>, hashOf: (TargetFile) -> String?): List<Compared> {
+    fun compare(
+        entries: List<ManifestEntry>,
+        files: List<TargetFile>,
+        strippedCopies: Map<String, Pair<String, Long>> = emptyMap(),
+        hashOf: (TargetFile) -> String?,
+    ): List<Compared> {
         val byHash = HashMap<String, MutableList<TargetFile>>()
-        for (f in candidates(entries, files)) {
+        // A copy stripped in an earlier run has neither of the entry's sizes, so it is a candidate by ID.
+        val wanted = entries.mapNotNull { strippedCopies[it.original.blake3.hex()]?.second }.toSet()
+        for (f in (candidates(entries, files) + files.filter { it.id in wanted }).distinctBy { it.id }) {
             val h = hashOf(f) ?: continue
             byHash.getOrPut(h) { mutableListOf() } += f
         }
@@ -63,7 +73,14 @@ object Comparison {
                 live != null -> Compared(PlanStatus.PRESENT, live)
                 liveOriginal != null -> Compared(PlanStatus.PRESENT, liveOriginal, WITH_METADATA)
                 (sent + original).isNotEmpty() -> Compared(PlanStatus.PRESENT_IN_TRASH, (sent + original).first())
-                else -> Compared(PlanStatus.TO_COPY)
+                else -> {
+                    // The reverse of WITH_METADATA: graphite stripped this original in an earlier run and the
+                    // copy is still there. Never copy the original next to it, never replace it.
+                    val stripped = strippedCopies[e.original.blake3.hex()]
+                    val copy = stripped?.let { (hash, id) -> byHash[hash]?.firstOrNull { it.id == id && !it.trashed } }
+                    if (copy != null) Compared(PlanStatus.PRESENT, copy, WITHOUT_METADATA, stripped.first)
+                    else Compared(PlanStatus.TO_COPY)
+                }
             }
         }
     }

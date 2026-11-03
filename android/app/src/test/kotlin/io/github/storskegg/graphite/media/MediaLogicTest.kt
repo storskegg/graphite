@@ -70,6 +70,24 @@ class ComparisonTest {
         assertEquals(Comparison.WITH_METADATA, r[0].note)
     }
 
+    @Test fun keepAllAfterAStrippedCopySkipsTheOriginal() {
+        // An earlier run stripped `a` to `aStripped` (id 7, a size no entry has); now "Keep all" sends `a` itself.
+        val copies = mapOf(a.blake3.hex() to (aStripped.blake3.hex() to 7L))
+        val files = mapOf(TargetFile(7, "/t/7", 90, 0, false) to aStripped.blake3.hex())
+        val r = Comparison.compare(listOf(entry("DCIM/a.jpg", digest(1, 100))), files.keys.toList(), copies) { files[it] }
+        assertEquals(PlanStatus.PRESENT, r[0].status)
+        assertEquals(Comparison.WITHOUT_METADATA, r[0].note)
+        assertEquals(7L, r[0].match!!.id)
+        assertEquals(aStripped.blake3.hex(), r[0].matchHash)
+    }
+
+    @Test fun aTrashedOrGoneStrippedCopyDoesNotCount() {
+        val copies = mapOf(a.blake3.hex() to (aStripped.blake3.hex() to 7L))
+        val trashed = mapOf(TargetFile(7, "/t/7", 90, 0, true) to aStripped.blake3.hex())
+        assertEquals(PlanStatus.TO_COPY, Comparison.compare(listOf(entry("DCIM/a.jpg", a)), trashed.keys.toList(), copies) { trashed[it] }[0].status)
+        assertEquals(PlanStatus.TO_COPY, Comparison.compare(listOf(entry("DCIM/a.jpg", a)), emptyList(), copies) { null }[0].status)
+    }
+
     @Test fun aLiveCopyWinsOverATrashedOne() {
         val r = run(listOf(entry("DCIM/a.jpg", a)), target(1, a, trashed = true), target(2, a))
         assertEquals(PlanStatus.PRESENT, r[0].status)
@@ -172,6 +190,15 @@ class JournalTest {
         assertEquals(Journal.State.VERIFIED, j.get("cc")!!.state)
     }
 
+    @Test fun strippedCopiesKeepTheirOriginalAcrossReopening() {
+        Journal(file).apply {
+            pending("bb", 2); published("bb", 2, "aa")   // stripped: original aa
+            pending("cc", 3); published("cc", 3, "cc")   // kept as is: no original recorded
+            pending("dd", 4)                             // still pending: not a copy yet
+        }
+        assertEquals(mapOf("aa" to ("bb" to 2L)), Journal(file).strippedCopies())
+    }
+
     @Test fun forgottenEntriesStayForgotten() {
         Journal(file).apply { pending("aa", 1); forget("aa") }
         assertEquals(null, Journal(file).get("aa"))
@@ -259,5 +286,15 @@ class ReceiptsTest {
         val back = ManifestMsg.decode(m.encode())
         assertTrue(back.signed.contentEquals(m.signed))
         assertEquals(m.unremovable, back.unremovable)
+    }
+}
+
+class CableSetupTest {
+    @Test fun installedVersionReadsOnlyThisPackage() {
+        val pkg = "io.github.storskegg.graphite"
+        val out = "package:io.github.storskegg.graphite.debug versionCode:9\npackage:io.github.storskegg.graphite versionCode:3\n"
+        assertEquals(3L, io.github.storskegg.graphite.usb.CableSetup.installedVersion(out, pkg))
+        assertEquals(null, io.github.storskegg.graphite.usb.CableSetup.installedVersion("", pkg))
+        assertEquals(null, io.github.storskegg.graphite.usb.CableSetup.installedVersion("package:io.github.storskegg.graphite.debug versionCode:9", pkg))
     }
 }

@@ -67,6 +67,7 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
         // 4. Answer requests until the target is done.
         var sent = 0L
         var count = 0
+        val meter = Meter(ctl, "Sending", t.bytesToCopy.toLong(), t.toCopy.toInt())
         while (true) {
             val m = ch.receive()
             when (m.type) {
@@ -74,9 +75,10 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
                     val i = BinReader(m.body).u32().toInt()
                     planCheckRequest(plan, i.toUInt())
                     val e = manifest.files[i]
-                    ctl.show(Screen("Sending", "${++count} of ${t.toCopy}: ${e.path}", progress = Progress(sent, t.bytesToCopy.toLong(),
-                        "${formatBytes(sent)} of ${formatBytes(t.bytesToCopy.toLong())}")))
-                    sendFile(i, files[i], e, manifest.metadata, i in unremovable)
+                    val n = ++count
+                    val before = sent
+                    meter.update(sent, n, e.path, force = true)
+                    sendFile(i, files[i], e, manifest.metadata, i in unremovable) { off -> meter.update(before + off, n, e.path) }
                     sent += e.sent.size.toLong()
                 }
                 Msg.COPY_DONE -> break
@@ -186,7 +188,7 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
     )
 
     /** Re-reads the file, strips it again if chosen, and sends it only if both hashes still match the manifest. */
-    private fun sendFile(i: Int, f: SourceFile, e: ManifestEntry, choice: MetadataChoice, asIs: Boolean) {
+    private fun sendFile(i: Int, f: SourceFile, e: ManifestEntry, choice: MetadataChoice, asIs: Boolean, onBytes: (Long) -> Unit) {
         val opened = try { open(f, choice, asIs) } catch (x: Exception) {
             log("send ${f.path}: $x")
             ch.send(Msg.FILE_END, BinWriter().u32(i).u8(FileEnd.UNREADABLE).finish())
@@ -206,6 +208,7 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
                 if (b.isEmpty()) break
                 ch.send(Msg.FILE_DATA, BinWriter().u32(i).raw(b).finish())
                 off += b.size.toUInt()
+                onBytes(off.toLong())
             }
             ch.send(Msg.FILE_END, BinWriter().u32(i).u8(FileEnd.OK).finish())
         }
@@ -231,6 +234,7 @@ class Removal(private val ctl: Controller) {
         ctl.requireAuth("moves files to the trash", fresh = true)
         val chosen = removable.filter { Preflight.folder(manifest.files[it].path) in a.checked }
         val items = ArrayList<SourceLibrary.Item>()
+        val paths = HashMap<android.net.Uri, String>()
         var changed = 0
         for ((n, i) in chosen.withIndex()) {
             ctl.show(Screen("Checking", "Re-reading each file before removal…", progress = Progress(n.toLong(), chosen.size.toLong(), "${n + 1} of ${chosen.size}")))
@@ -239,6 +243,7 @@ class Removal(private val ctl: Controller) {
             val item = if (same) SourceLibrary.mediaItem(ctl.app, f.file) else null
             if (item == null) { changed++; log("not removing ${f.path}: changed or unknown to MediaStore"); continue }
             items += item
+            paths[item.uri] = f.path
         }
         // Android's trash request takes only photos, videos and audio ("All requested items must be Media
         // items"); it shows Android's own confirmation. Other files (documents, downloads) go to the trash
@@ -250,9 +255,23 @@ class Removal(private val ctl: Controller) {
             val activity = MainActivity.current
             if (activity == null || !activity.launchForResult(pi.intentSender).get()) declined += batch
         }
-        fun trashDirectly(uri: android.net.Uri) = runCatching {
-            ctl.app.contentResolver.update(uri, android.content.ContentValues().apply { put(MediaStore.MediaColumns.IS_TRASHED, 1) }, null, null)
-        }.onFailure { log("trash $uri: $it") }
+        // IS_TRASHED on the item's own URI, then on its Files URI (MediaStore can refuse one and not the other).
+        fun trashDirectly(uri: android.net.Uri) {
+            val files = android.content.ContentUris.withAppendedId(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), android.content.ContentUris.parseId(uri))
+            fun trash(u: android.net.Uri) = runCatching {
+                ctl.app.contentResolver.update(u, android.content.ContentValues().apply { put(MediaStore.MediaColumns.IS_TRASHED, 1) }, null, null) == 1
+            }.onFailure { log("trash $u: $it") }.getOrDefault(false)
+            for (u in listOf(uri, files).distinct()) if (trash(u)) return
+            // Android 17 refuses to move a file whose MediaStore type doesn't match its name (clip.mov and a .3gp
+            // stored as video/mp4). For an item the user approved for removal, correct the index's type from the
+            // name, then try again; the file itself is untouched.
+            val name = paths[uri] ?: return
+            val byName = SourceLibrary.knownMimeFor(name) ?: return
+            runCatching {
+                ctl.app.contentResolver.update(files, android.content.ContentValues().apply { put(MediaStore.MediaColumns.MIME_TYPE, byName) }, null, null)
+            }.onFailure { log("retype $files: $it") }.onSuccess { log("retyped $name as $byName to trash it") }
+            trash(files)
+        }
         other.forEach { trashDirectly(it.uri) }
         // An accepted trash request can still skip an item (a .mov that MediaStore types video/mp4 stayed put
         // on the Pixel 7 Pro), so each item's IS_TRASHED decides. Skipped items the user approved are trashed
@@ -266,7 +285,9 @@ class Removal(private val ctl: Controller) {
         ctl.ask(Screen("Removal finished", "$trashed files moved to this phone's trash (restorable for 30 days)." +
             (if (changed > 0) "\n$changed were not removed because they changed since the copy or MediaStore doesn't list them." else "") +
             (if (declined.isNotEmpty()) "\n${declined.size} were not removed: the request was declined." else "") +
-            (if (failed > 0) "\n$failed could not be moved to the trash; they are still on this phone." else ""),
+            (if (failed > 0) "\n$failed could not be moved to the trash: Android refused (it can happen with a file whose " +
+                "type doesn't match its name, such as a .mov stored as MP4). They are still on this phone, untouched:\n" +
+                notTrashed.take(10).joinToString("\n") { paths[it.uri] ?: it.uri.toString() } else ""),
             buttons = emptyList()))
     }
 

@@ -95,12 +95,18 @@ class CableSetup(private val ctl: Controller, private val conn: Connection) {
             ctl.show(Screen("Setting up the old phone", "On the old phone, tap Allow on \"Allow USB debugging?\"."))
             val banner = adb.connect(AdbKey.private(), AdbKey.publicKey())
             log("adb connected: $banner")
-            val apk = File(ctl.app.applicationInfo.sourceDir).readBytes()
-            ctl.show(Screen("Setting up the old phone", "Installing graphite (${apk.size / 1_000_000} MB)…"))
-            val out = adb.run("exec:cmd package install -r -S ${apk.size}", apk).trim()
-            log("adb install: $out")
-            if (!out.contains("Success")) throw IOException("install refused: $out")
             val pkg = ctl.app.packageName
+            // graphite may already be there, only slow to answer (waiting for its user): then it is just opened.
+            val installed = installedVersion(adb.run("shell:pm list packages --show-versioncode $pkg"), pkg)
+            val mine = ctl.app.packageManager.getPackageInfo(pkg, 0).longVersionCode
+            log("adb: graphite on the old phone: ${installed ?: "not installed"}; this phone: $mine")
+            if (installed == null || installed < mine) {
+                val apk = File(ctl.app.applicationInfo.sourceDir).readBytes()
+                ctl.show(Screen("Setting up the old phone", "Installing graphite (${apk.size / 1_000_000} MB)…"))
+                val out = adb.run("exec:cmd package install -r -S ${apk.size}", apk).trim()
+                log("adb install: $out")
+                if (!out.contains("Success")) throw IOException("install refused: $out")
+            }
             val grants = adb.run("shell:appops set $pkg MANAGE_EXTERNAL_STORAGE allow; " +
                 "pm grant $pkg android.permission.POST_NOTIFICATIONS; appops get $pkg MANAGE_EXTERNAL_STORAGE; " +
                 "am start -n $pkg/.MainActivity" +
@@ -115,6 +121,12 @@ class CableSetup(private val ctl: Controller, private val conn: Connection) {
     }
 
     companion object {
+        /** The versionCode in `pm list packages --show-versioncode` output for exactly [pkg], or null. */
+        fun installedVersion(out: String, pkg: String): Long? = out.lines()
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("package:$pkg ") }
+            ?.substringAfter("versionCode:", "")?.trim()?.toLongOrNull()
+
         const val OPEN_THERE = "It's already open there"
         const val SIDELOAD = "graphite isn't answering on the old phone. If the old phone says no installed apps work " +
             "with this USB accessory, graphite isn't installed there: dismiss that message. If it is open there, confirm it's you on " +

@@ -80,6 +80,7 @@ class MainActivity : Activity() {
     private fun handleIntent(i: Intent?) {
         if (i?.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) log("accessory attached (launched by the other phone)")
         if (controller.debuggable && i?.hasExtra("test_scope") == true) controller.testScope = i.getStringExtra("test_scope")
+        if (controller.debuggable && i?.hasExtra("test_free_bytes") == true) controller.testFreeBytes = i.getStringExtra("test_free_bytes")?.toLongOrNull()
     }
 
     override fun onStart() {

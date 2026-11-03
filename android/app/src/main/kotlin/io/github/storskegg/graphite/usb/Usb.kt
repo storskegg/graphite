@@ -78,7 +78,12 @@ object Usb {
             val pi = PendingIntent.getBroadcast(context, 0, Intent(action).setPackage(context.packageName),
                 PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             if (device != null) um.requestPermission(device, pi) else um.requestPermission(accessory, pi)
-            latch.await(120, TimeUnit.SECONDS)
+            // The answer can also come without the broadcast: when the accessory intent reopens graphite, Android
+            // grants the permission and the dialog goes away unanswered (a 2-minute stall after a cable pull).
+            val deadline = System.currentTimeMillis() + 120_000
+            while (System.currentTimeMillis() < deadline && !latch.await(500, TimeUnit.MILLISECONDS)) {
+                if (if (device != null) um.hasPermission(device) else um.hasPermission(accessory)) break
+            }
         } finally {
             context.unregisterReceiver(r)
         }

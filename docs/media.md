@@ -131,6 +131,7 @@ metadata**). A target file is the same item if its bytes match either one.
 | Same bytes already anywhere on the target | Skip. Not copied to a second folder |
 | A copy graphite stripped earlier is on the target (matches **sent**) | Skip. Re-running a stripped transfer copies nothing |
 | The original, with its metadata, is already on the target (matches **original**) but the user chose to strip | Skip, and the receipt says "already on the new phone, with its metadata". It is never quietly replaced |
+| A copy graphite stripped earlier is on the target, and the user now chose **Keep all metadata** (the target's journal records which original each stripped copy came from) | Skip, and the receipt says "already on the new phone, without its metadata". The original is never copied next to it, and the copy is never quietly replaced |
 | Same bytes at two paths on the source | Copy once. Prefer `DCIM/`, then `Pictures/`, then the shortest path |
 | Two source files that differ only in removed metadata (same **sent** hash) | Copy once, as above |
 | Same name and folder, different bytes | Copy, and let MediaStore give it a new name (`IMG_1234 (1).jpg`). Never overwrite |

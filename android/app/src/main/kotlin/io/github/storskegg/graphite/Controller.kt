@@ -121,6 +121,11 @@ class Controller(val app: Context) {
         get() = if (debuggable) prefs.getString("test_scope", null)?.ifEmpty { null } else null
         set(v) { prefs.edit().putString("test_scope", v).apply(); updateStatus() }
 
+    /** Test builds only: the target's free space as preflight sees it, to test the space check. */
+    var testFreeBytes: Long?
+        get() = if (debuggable) prefs.getString("test_free_bytes", null)?.toLongOrNull() else null
+        set(v) { prefs.edit().putString("test_free_bytes", v?.toString()).apply() }
+
     val debuggable get() = (app.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     /** Starts the session's flow once; later calls do nothing while it runs. */

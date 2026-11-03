@@ -56,7 +56,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         val targetFiles = store.list()
         val candidates = Comparison.candidates(entries, targetFiles)
         var hashed = 0
-        val compared = Comparison.compare(entries, targetFiles) { f ->
+        val compared = Comparison.compare(entries, targetFiles, journal.strippedCopies()) { f ->
             if (hashed++ % 20 == 0) ctl.show(Screen("Comparing", "Checking which files this phone already has…",
                 progress = Progress(hashed.toLong(), candidates.size.toLong(), "$hashed of ${candidates.size} files with a matching size")))
             store.hash(f)
@@ -96,7 +96,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         }
         compared.forEachIndexed { i, c ->
             if (statuses[i] == PlanStatus.PRESENT) {
-                outcomes[i] = verify(i, c.match!!.id, manifest, notes, check = false, note = c.note)
+                outcomes[i] = verify(i, c.match!!.id, manifest, notes, check = false, note = c.note, alsoAccept = c.matchHash)
             }
         }
         val receiptEntries = Receipts.build(entries, statuses, outcomes, primaryOf, notes)
@@ -204,7 +204,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         while (true) {
             val totals = planTotals(manifest, planEntries(statuses))
             val bytes = totals.bytesToCopy.toLong()
-            val allocatable = Flows.allocatableBytes(ctl.app)
+            val allocatable = ctl.testFreeBytes ?: Flows.allocatableBytes(ctl.app)
             if (!Preflight.fits(bytes, allocatable)) {
                 val byFolder = sortedMapOf<String, Long>()
                 for (i in offered) byFolder.merge(Preflight.folder(entries[i].path), entries[i].sent.size.toLong(), Long::plus)
@@ -259,7 +259,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
     private fun copy(entries: List<io.github.storskegg.graphite.ffi.ManifestEntry>, order: List<Int>, outcomes: MutableMap<Int, Outcome>, copiedIds: MutableMap<Int, Long>) {
         val total = order.sumOf { entries[it].sent.size.toLong() }
         var done = 0L
-        val t0 = System.nanoTime()
+        val meter = Meter(ctl, "Copying", total, order.size)
         var stopRest = false
         for ((n, i) in order.withIndex()) {
             if (stopRest) { outcomes[i] = Outcome.NotCopied(NotCopiedReason.DID_NOT_FIT); continue }
@@ -267,10 +267,9 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             var attempt = 0
             while (true) {
                 attempt++
-                val elapsed = (System.nanoTime() - t0) / 1e9
-                ctl.show(Screen("Copying", "${n + 1} of ${order.size}: ${e.path}", progress = Progress(done, total,
-                    "${formatBytes(done)} of ${formatBytes(total)}" + if (elapsed > 2) ", %.0f MB/s".format(done / elapsed / 1e6) else "")))
-                val r = try { receiveOne(i, e) } catch (x: OutOfSpace) {
+                meter.update(done, n + 1, e.path, force = true)
+                val before = done
+                val r = try { receiveOne(i, e) { got -> meter.update(before + got, n + 1, e.path) } } catch (x: OutOfSpace) {
                     val a = ctl.ask(Screen("This phone is full", "Another app used the space while copying. Nothing " +
                         "half-written is kept. Free some space and retry, or stop copying (the rest is reported as did not fit).",
                         buttons = listOf("Retry", "Stop copying")))
@@ -291,7 +290,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
     private class OutOfSpace : Exception()
 
     /** Requests one file and writes it as a pending item; publishes it when the hash matches. */
-    private fun receiveOne(i: Int, e: io.github.storskegg.graphite.ffi.ManifestEntry): Pair<Outcome, Long?> {
+    private fun receiveOne(i: Int, e: io.github.storskegg.graphite.ffi.ManifestEntry, onBytes: (Long) -> Unit): Pair<Outcome, Long?> {
         val sentHex = e.sent.blake3.hex()
         ch.send(Msg.REQUEST, BinWriter().u32(i).finish())
         var m = ch.receive()
@@ -314,6 +313,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
                             if (x.message?.contains("ENOSPC") == true || x.message?.contains("No space") == true) full = true else throw x
                         }
                         got += m.body.size - 4
+                        onBytes(got)
                     }
                     if (!full) TargetStore.sync(out)
                 }
@@ -334,7 +334,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             return Outcome.NotCopied(NotCopiedReason.FAILED, "hash did not match after writing") to null
         }
         val touched = store.publish(id, e.modifiedMs)
-        journal.published(sentHex, id)
+        journal.published(sentHex, id, e.original.blake3.hex())
         return Outcome.Verified(if (touched) "" else "modification time not restored") to id
     }
 
@@ -357,12 +357,12 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
     }
 
     /** Re-reads an item through MediaStore and checks it is published, not trashed, with the right bytes and dates. */
-    private fun verify(i: Int, id: Long, manifest: Manifest, notes: MutableMap<Int, String>, check: Boolean = true, note: String = ""): Outcome {
+    private fun verify(i: Int, id: Long, manifest: Manifest, notes: MutableMap<Int, String>, check: Boolean = true, note: String = "", alsoAccept: String? = null): Outcome {
         val e = manifest.files[i]
         val row = store.row(id) ?: return Outcome.NotCopied(NotCopiedReason.FAILED, "gone from the new phone during the transfer")
         if (row.pending || row.trashed) return Outcome.NotCopied(NotCopiedReason.FAILED, if (row.trashed) "moved to the new phone's trash during the transfer" else "still pending")
         val hex = store.hashUncached(id)
-        val expected = setOf(e.sent.blake3.hex(), e.original.blake3.hex())
+        val expected = setOfNotNull(e.sent.blake3.hex(), e.original.blake3.hex(), alsoAccept)
         if (hex !in expected) return Outcome.NotCopied(NotCopiedReason.FAILED, "changed on the new phone during the transfer")
         val dateNotes = mutableListOf<String>()
         if (check) {

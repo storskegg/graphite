@@ -14,7 +14,8 @@ import java.io.FileOutputStream
 class Journal(private val file: File) {
     enum class State { PENDING, PUBLISHED, VERIFIED }
 
-    data class Entry(val sent: String, val state: State, val mediaId: Long)
+    /** [original] is the source file's hash when graphite stripped it (sent differs); empty otherwise. */
+    data class Entry(val sent: String, val state: State, val mediaId: Long, val original: String = "")
 
     private val entries = LinkedHashMap<String, Entry>()
 
@@ -24,7 +25,7 @@ class Journal(private val file: File) {
                 val p = line.split(' ')
                 when {
                     p.size == 2 && p[0] == "forget" -> entries.remove(p[1])
-                    p.size == 3 -> runCatching { Entry(p[0], State.valueOf(p[1]), p[2].toLong()) }
+                    p.size == 3 || p.size == 4 -> runCatching { Entry(p[0], State.valueOf(p[1]), p[2].toLong(), p.getOrElse(3) { "" }) }
                         .onSuccess { entries[it.sent] = it }
                     // A line cut short by a crash is ignored.
                 }
@@ -38,7 +39,13 @@ class Journal(private val file: File) {
     @Synchronized fun leftovers() = entries.values.filter { it.state == State.PENDING }
 
     fun pending(sent: String, mediaId: Long) = put(Entry(sent, State.PENDING, mediaId))
-    fun published(sent: String, mediaId: Long) = put(Entry(sent, State.PUBLISHED, mediaId))
+    fun published(sent: String, mediaId: Long, original: String = "") =
+        put(Entry(sent, State.PUBLISHED, mediaId, if (original == sent) "" else original))
+
+    /** Copies graphite stripped, by the hash of the original they came from: original → (sent hash, MediaStore ID). */
+    @Synchronized fun strippedCopies(): Map<String, Pair<String, Long>> = entries.values
+        .filter { it.original.isNotEmpty() && it.state != State.PENDING }
+        .associate { it.original to (it.sent to it.mediaId) }
 
     fun verified(sent: String) {
         val e = get(sent) ?: return
@@ -51,8 +58,10 @@ class Journal(private val file: File) {
 
     @Synchronized private fun put(e: Entry) {
         entries[e.sent] = e
-        append("${e.sent} ${e.state} ${e.mediaId}")
+        append(line(e))
     }
+
+    private fun line(e: Entry) = "${e.sent} ${e.state} ${e.mediaId}" + if (e.original.isEmpty()) "" else " ${e.original}"
 
     private fun append(line: String) {
         FileOutputStream(file, true).use { out ->
@@ -65,7 +74,7 @@ class Journal(private val file: File) {
         file.parentFile?.mkdirs()
         val tmp = File(file.path + ".tmp")
         FileOutputStream(tmp).use { out ->
-            for (e in entries.values) out.write("${e.sent} ${e.state} ${e.mediaId}\n".toByteArray())
+            for (e in entries.values) out.write("${line(e)}\n".toByteArray())
             out.fd.sync()
         }
         check(tmp.renameTo(file)) { "could not replace $file" }

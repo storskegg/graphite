@@ -156,7 +156,8 @@ class Connection(private val ctl: Controller) {
     }
 
     companion object {
-        const val STALL_MS = 20_000L
+        // Long enough for the user to confirm it's you on the old phone after a replug or role swap.
+        const val STALL_MS = 30_000L
         // Apps can't change the USB role (that needs MANAGE_USB, a system permission), so graphite says
         // exactly what to tap and watches for the change. Replugging the cable often hands control back
         // to the old phone, and the Settings label can name the wrong phone, so this screen is the judge.
