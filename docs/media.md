@@ -160,7 +160,7 @@ needs a `graphite/1 plan` context string for it.
 ### 1. Manifest
 
 A header with the metadata choice and the stripper version. For each file: relative
-path, MIME type, `DATE_TAKEN`, modification time, and size and BLAKE3 hash both of
+path, MIME type, `DATE_TAKEN`, `DATE_ADDED`, modification time, and size and BLAKE3 hash both of
 the original and of the bytes to be sent. Signed with the session's ML-DSA key and
 sent inside the encrypted channel.
 
@@ -210,6 +210,7 @@ the copy on the target.
 
 ### 4. Copy
 
+Files are copied in the source's `DATE_ADDED` order (see [File dates](#file-dates)).
 For each file *to copy*:
 
 1. MediaStore entry inserted with `IS_PENDING = 1` in the same relative folder.
@@ -277,6 +278,25 @@ asks. Nothing is preselected.
   enough: the target may have changed since. Running the transfer again gives a
   fresh receipt (nothing to copy, everything *present*), which can then be used for
   removal.
+
+## File dates
+
+Every copied file, media or not, keeps its original dates wherever Android lets an
+app set them, so it sorts on the target the same way it did on the source. The
+manifest carries each file's modification time and MediaStore `DATE_ADDED` and
+`DATE_TAKEN`.
+
+| Date | Where it sorts | On the target |
+|---|---|---|
+| Modification time (`mtime`, MediaStore `DATE_MODIFIED`) | File managers; galleries' fallback | **Restored** from the source before publishing (proven in the [spike](spike.md#5-mediastore-dates)) |
+| `DATE_TAKEN` | Galleries | **The same**, because the scanner derives it from the bytes and the restored modification time (see the copy phase above). Not under **Remove all but what display needs**, which removes it on purpose |
+| `DATE_ADDED` | "Recently added" views, some galleries | **Set by MediaStore at insert, read-only to apps.** Two steps keep it right: files are copied in the source's `DATE_ADDED` order, so the relative order survives even if the values do not; and the target then tries to write the source's values through its adb-level shell over the cable (`content update`). Whether MediaProvider accepts that from the shell is not proven yet |
+| Access time (`atime`) | Nothing users see | Not restored |
+| Change time and creation time (`ctime`, `btime`) | `ls -c`, `stat` | **Cannot be set** by any app or by the shell; the kernel sets them. Only root could, by changing the clock |
+
+`DATE_ADDED` set through the shell survives rescans, but not MediaProvider rebuilding
+its database (after its data is cleared), which sets it to the time of the rebuild.
+The receipt notes every file whose dates did not come out as on the source.
 
 ## Idempotence
 
