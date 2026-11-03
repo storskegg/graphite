@@ -80,17 +80,41 @@ On GrapheneOS the USB-C port setting must allow data; the app checks and says so
 
 Pairing authenticates the cable link. A cable alone proves nothing.
 
+Each phone makes a fresh **key share** per session: an ephemeral X-Wing public key,
+an ephemeral ML-DSA-65 verification key and a nonce. A **commitment** to a share is
+a BLAKE3 hash over the role, the session ID and the share.
+
 1. **NFC tap (default).** The target emulates a card (host card emulation, private
-   AID, preferred service while the app is in front); the source reads it. Each side
-   sends a hash of its ephemeral X-Wing and ML-DSA public keys and confirms what it
-   received. No secret crosses NFC, so a passive listener learns nothing useful.
-2. **QR code.** The target shows: protocol version, session ID, hash of its
-   ephemeral public keys, a 256-bit one-time secret. The source scans it. The secret
-   becomes the HPKE pre-shared key, proving to the target that the peer scanned it.
-3. **6-digit comparison.** Commit-then-reveal: the source sends a hash of its key
-   share, the target sends its share, the source reveals. Both screens show 6 digits
-   derived from the transcript hash; the user confirms they match on both. One chance
-   in 10^6 for a man-in-the-middle per attempt, nothing to attack offline.
+   AID, preferred service while the app is in front); the source reads it. The
+   target's answer carries its commitment, the source's reply carries its own.
+   Each side then checks the other's share on the cable against the commitment it
+   got over NFC. No secret crosses NFC, so a passive listener learns nothing useful.
+2. **QR code.** The target shows: protocol version, suite, session ID, its
+   commitment and a 256-bit one-time secret. The source scans it. The secret is the
+   HPKE pre-shared key in both directions and never crosses the cable, so only a
+   peer that scanned the code can complete the key confirmation.
+3. **6-digit comparison.** Commit-then-reveal: the source sends its commitment, the
+   target sends its share, the source reveals its share. Because the source is
+   bound before it sees the target's share, no one can pick a share to steer the
+   code. Both screens show 6 digits derived from the transcript hash; the user
+   confirms they match on both, and pairing cannot finish until they have. One
+   chance in 10^6 for a man-in-the-middle per attempt, nothing to attack offline.
+
+All three use the same six messages; only the channel of the first two differs:
+
+| # | Message | NFC | QR | Code |
+|---|---|---|---|---|
+| 1 | Target hello: version, suite, method, session ID, commitment, QR secret | NFC | QR code | cable (no commitment) |
+| 2 | Source commitment | NFC | cable | cable |
+| 3 | Target share | cable | cable | cable |
+| 4 | Source share and its HPKE encapsulation to the target | cable | cable | cable |
+| 5 | Target's HPKE encapsulation to the source, and its key confirmation | cable | cable | cable |
+| 6 | Source key confirmation | cable | cable | cable |
+
+**Both sides encapsulate.** Anyone can encapsulate to a public key, so a single
+encapsulation from source to target would give the target no proof of who sent it.
+With one in each direction, each side's keys depend on a secret only the holder of
+the peer's authenticated share can recover.
 
 Afterwards the target asks the user to accept the named source before anything flows.
 
@@ -114,19 +138,25 @@ the user having seen it.
 
 | Layer | Choice |
 |---|---|
-| Key exchange | HPKE (RFC 9180) with X-Wing (X25519 + ML-KEM-768); PSK mode for QR pairing |
-| Session keys | One key per direction, derived from the HPKE export; key confirmation both ways |
-| Bulk data | XChaCha20-Poly1305, 1 MiB chunks, nonce from chunk counter, last-chunk flag authenticated |
-| Signatures | ML-DSA-65 (FIPS 204), per-session keys bound by pairing; source signs the manifest, target signs a receipt |
+| Key exchange | HPKE (RFC 9180) with X-Wing (X25519 + ML-KEM-768), one encapsulation each way; PSK mode for QR pairing |
+| Transcript | BLAKE3 over version, suite, the hello (without the QR secret), both shares and both encapsulations; HPKE `info` carries the transcript hash up to the shares |
+| Session keys | From both HPKE exports and the full transcript hash: one stream key and one confirmation key per direction; key confirmation both ways |
+| Bulk data | XChaCha20-Poly1305, at most 1 MiB per chunk. The nonce is never sent: it is built from the sender, the chunk counter and the last-chunk flag, so the flag is authenticated |
+| Signatures | ML-DSA-65 (FIPS 204), hedged, over the transcript hash and the document, with context strings `graphite/1 manifest` and `graphite/1 receipt`; per-session keys bound by pairing. Source signs the manifest, target signs a receipt carrying the manifest's hash |
 | Content identity | BLAKE3 of each file's bytes (see [media.md](media.md)) |
 | Passphrases | None in a live transfer. Argon2id (RFC 9106) only for an optional encrypted export file |
 
 The 6-digit code is never a key. A 20-bit secret run through a KDF is still 20 bits
 and falls to an offline search; it is only used as an online comparison.
 
-Implementation: a Rust core (libcrux for ML-KEM and ML-DSA; RustCrypto for X25519,
-XChaCha20-Poly1305, BLAKE3, Argon2), wrapped for Kotlin with uniffi. HPKE with X-Wing
-is checked against the draft's test vectors.
+Implementation: the Rust core in [`core/`](../core), wrapped for Kotlin with uniffi
+later. HPKE comes from hpke-rs with its libcrux backend, so ML-KEM **and X25519**
+(inside X-Wing) are libcrux's formally verified code; ML-DSA is libcrux too.
+RustCrypto provides XChaCha20-Poly1305, and the official `blake3` crate the hashing.
+Every crate, with version and reason, and which parts are covered by official test
+vectors, is listed in [core/README.md](../core/README.md). One gap: no official
+vectors exist for HPKE PSK mode with X-Wing, so that combination is covered by our
+own tests and by the PSK vectors for DHKEM(X25519), which use the same key schedule.
 
 ## Threat model
 
