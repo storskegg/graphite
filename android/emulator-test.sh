@@ -97,7 +97,7 @@ boot() {  # boot SERIAL AVD [EMULATOR FLAG...]
 prepare() {  # prepare SERIAL ROLE TCP
     # A freshly booted emulator's package service can still refuse for a while.
     local try
-    for try in 1 2 3 4 5; do "$ADB" -s "$1" install -r -g "$APK" >/dev/null && break; [ $try = 5 ] && exit 1; sleep 10; done
+    for try in 1 2 3 4 5; do "$ADB" -s "$1" install -r -g "$APK" && break; [ $try = 5 ] && { echo "FAIL: could not install on $1" >&2; exit 1; }; sleep 10; done
     for try in $(seq 30); do sh_ "$1" "pm path $PKG" 2>/dev/null | grep -q '^package:' && break; sleep 2; done
     sh_ "$1" "locksettings set-pin $PIN" >/dev/null 2>&1 || true   # BiometricPrompt then asks for the PIN
     sh_ "$1" "appops set $PKG MANAGE_EXTERNAL_STORAGE allow"

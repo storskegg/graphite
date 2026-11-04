@@ -153,8 +153,12 @@ attestation. `KEEP=1` leaves the emulators running; `HEADLESS=0` shows them;
 emulator holds it), and the API 30 source runs permissive (its updated
 MediaProvider module is denied its pass-through mount by the image's older
 SELinux policy, so nothing would be scanned). In CI (`.github/workflows/android.yml`)
-it runs on request only (`workflow_dispatch`), on x86_64 images with KVM, until
-it has proven itself there; the unit tests run on every push.
+it runs on request only (`workflow_dispatch`), on x86_64 images with KVM; the
+unit tests run on every push. It has not passed on a hosted runner yet: six
+runs on 4 November 2026 got progressively further (AVD location, the adb
+server race, the data partition, slow system services, package visibility),
+and the last stopped installing the APK on a freshly booted emulator. Until it
+passes there, it is a local test.
 
 ### Device test
 
