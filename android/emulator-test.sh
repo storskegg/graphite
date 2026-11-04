@@ -87,7 +87,9 @@ boot() {  # boot SERIAL AVD [EMULATOR FLAG...]
 }
 
 prepare() {  # prepare SERIAL ROLE TCP
-    "$ADB" -s "$1" install -r -g "$APK" >/dev/null
+    # A freshly booted emulator's package service can still refuse for a while.
+    local try
+    for try in 1 2 3 4 5; do "$ADB" -s "$1" install -r -g "$APK" >/dev/null && break; [ $try = 5 ] && exit 1; sleep 10; done
     sh_ "$1" "locksettings set-pin $PIN" >/dev/null 2>&1 || true   # BiometricPrompt then asks for the PIN
     sh_ "$1" "appops set $PKG MANAGE_EXTERNAL_STORAGE allow"
     sh_ "$1" "pm grant $PKG android.permission.POST_NOTIFICATIONS" >/dev/null 2>&1 || true   # API 33+
@@ -322,6 +324,7 @@ main() {
     avd graphite-target "$TARGET_IMAGE"; avd graphite-source "$SOURCE_IMAGE"
     # The target needs no Wi-Fi (its port is reached over adb forward), and the
     # netsim Wi-Fi forwarder can hang the boot while another emulator holds it.
+    "$ADB" start-server >/dev/null 2>&1   # once, before the two boots race to start it
     boot "$T" graphite-target -feature -VirtioWifi,-WiFiPacketStream & tb=$!
     boot "$S" graphite-source & sb=$!
     wait "$tb" || exit 1; wait "$sb" || exit 1
