@@ -83,7 +83,12 @@ boot() {  # boot SERIAL AVD [EMULATOR FLAG...]
         [ "$(date +%s)" -gt "$end" ] && { echo "FAIL: emulator $2: system services never came up" >&2; exit 1; }
         sleep 2
     done
+    # An AVD booted with the test PIN set stays locked, and a locked user can't start graphite.
+    sh_ "$1" "locksettings verify --old $PIN" >/dev/null 2>&1 || true
+    sh_ "$1" "input keyevent 224; input keyevent 82"; sleep 1; auth "$1"
     sh_ "$1" "svc power stayon true; settings put system screen_off_timeout 1800000; input keyevent 82" >/dev/null
+    # The receipt is read from the log, which the default 256 kB buffer can lose in noise.
+    sh_ "$1" "logcat -G 16M" >/dev/null 2>&1 || true
     # uiautomator can't dump a screen that never goes idle (a spinning progress bar).
     sh_ "$1" "settings put global animator_duration_scale 0; settings put global transition_animation_scale 0; settings put global window_animation_scale 0"
     if [ "$(sh_ "$1" getprop ro.build.version.sdk | tr -d '\r')" = 30 ]; then
@@ -102,7 +107,12 @@ prepare() {  # prepare SERIAL ROLE TCP
     sh_ "$1" "locksettings set-pin $PIN" >/dev/null 2>&1 || true   # BiometricPrompt then asks for the PIN
     sh_ "$1" "appops set $PKG MANAGE_EXTERNAL_STORAGE allow"
     sh_ "$1" "pm grant $PKG android.permission.POST_NOTIFICATIONS" >/dev/null 2>&1 || true   # API 33+
-    sh_ "$1" "am force-stop $PKG; am start -n $PKG/.MainActivity --es test_role $2 --es test_tcp $3 --es test_scope graphite-test" >/dev/null
+    # Right after an install the activity may not resolve yet ("does not exist").
+    for try in $(seq 15); do
+        sh_ "$1" "am force-stop $PKG; am start -n $PKG/.MainActivity --es test_role $2 --es test_tcp $3 --es test_scope graphite-test" 2>&1 | grep -q '^Error' || return 0
+        sleep 2
+    done
+    echo "FAIL: graphite would not start on $1" >&2; exit 1
 }
 
 # --- the screen --------------------------------------------------------------
@@ -139,13 +149,20 @@ waitfor() {
     fail "\"$2\" never showed on $1"
 }
 
+# waitlog SERIAL PATTERN [TIMEOUT]: waits for graphite to log PATTERN.
+waitlog() {
+    local end=$(( $(date +%s) + ${3:-300} ))
+    while [ "$(date +%s)" -lt "$end" ]; do "$ADB" -s "$1" logcat -d | grep -qF "$2" && return 0; sleep 2; done
+    fail "graphite never logged \"$2\" on $1"
+}
+
 # Either phone may be asking while the script waits on the other.
 auth_both() { auth "$T"; auth "$S"; }
 
 # The user-presence prompt: with only a PIN set, BiometricPrompt asks for it.
 auth() {
     case "$(focus "$1")" in
-        *BiometricPrompt*|*ConfirmDeviceCredential*|*Bouncer*|*Keyguard*)
+        *BiometricPrompt*|*ConfirmDeviceCredential*|*Bouncer*|*Keyguard*|*NotificationShade*)
             # The PIN field has no focus on API 30 until tapped.
             local b; b=$(ui "$1" | grep -E 'class="android.widget.EditText"' | grep -oE 'bounds="[^"]+"' | head -1 | grep -oE '[0-9]+' | tr '\n' ' ' || true)
             if [ -n "$b" ]; then set -- "$1" $b; sh_ "$1" "input tap $(( ($2 + $4) / 2 )) $(( ($3 + $5) / 2 ))"; fi
@@ -199,8 +216,12 @@ transfer() {
     sh_ "$S" "logcat -c"; sh_ "$T" "logcat -c"
     sh_ "$T" "am start -n $PKG/.MainActivity" >/dev/null; sh_ "$S" "am start -n $PKG/.MainActivity" >/dev/null
     waitfor "$T" "Compare the codes"; waitfor "$S" "Compare the codes"
-    local ct cs
-    ct=$(texts "$T" | grep -E '^[0-9]{3} [0-9]{3}$'); cs=$(texts "$S" | grep -E '^[0-9]{3} [0-9]{3}$')
+    local ct="" cs="" try
+    # A dump can fail while a screen is changing: read the codes until both are there.
+    for try in $(seq 10); do
+        ct=$(texts "$T" | grep -E '^[0-9]{3} [0-9]{3}$' || true); cs=$(texts "$S" | grep -E '^[0-9]{3} [0-9]{3}$' || true)
+        [ -n "$ct" ] && [ -n "$cs" ] && break; sleep 1
+    done
     [ -n "$ct" ] && [ "$ct" = "$cs" ] || fail "codes differ: '$ct' vs '$cs'"
     tap "$T" "They match"; tap "$S" "They match"; tap "$T" "Accept"
     tap "$T" "$1"; tap "$T" "Continue"
@@ -209,10 +230,11 @@ transfer() {
     if [ -n "${2:-}" ]; then "$2"; fi
     waitfor "$T" "Copy finished" 1200
     waitfor "$S" "Copy verified" 120
-    "$ADB" -s "$S" logcat -d | grep -o 'receipt verified: .*' | tail -1 | sed 's/^receipt verified: //'
+    "$ADB" -s "$S" logcat -d | { grep -o 'receipt verified: .*' || true; } | tail -1 | sed 's/^receipt verified: //'
 }
 
-done_both() { tap "$T" "Done"; tap "$S" "Done"; trytap "$S" "Keep them" 10 || true; }
+# Both back to the start; the source asks once more before leaving its files (it always has some here).
+done_both() { tap "$T" "Done"; tap "$S" "Done"; tap "$S" "Keep them" 30; }
 
 expect() {  # expect RECEIPT_LINE PATTERN
     echo "  receipt: $1"; echo "$1" | grep -qE "$2" || fail "receipt does not match /$2/"
@@ -220,7 +242,8 @@ expect() {  # expect RECEIPT_LINE PATTERN
 
 cut_socket() {  # the emulators' "cable pull": reset the source's connection mid-copy, then let it back
     # (removing the adb forward would leave the open socket alone). The source is rooted (API 30, see boot).
-    waitfor "$T" "gt-big" 120; sleep 3
+    # The copy screen changes four times a second, too often for uiautomator: watch the log.
+    waitlog "$T" "Copying: " 120; sleep 3
     sh_ "$S" "iptables -I OUTPUT -p tcp --dport $PORT -j REJECT --reject-with tcp-reset"; sleep 5
     sh_ "$S" "iptables -D OUTPUT -p tcp --dport $PORT -j REJECT --reject-with tcp-reset"
 }
@@ -231,7 +254,8 @@ keep() {
     fresh_target; local r; r=$(transfer "Keep all metadata"); done_both
     expect "$r" "^9 copied and verified, 0 already"   # the duplicate counts as copied; its bytes went once
     [ "$(rows "$T" | grep -c 'gt-gps')" = 1 ] || fail "the duplicate was copied twice"
-    local src; src=$(rows "$S" | grep "DCIM/graphite-test/gt-gps.jpg|")
+    local src; src=$(rows "$S" | grep "DCIM/graphite-test/gt-gps.jpg|" || true)
+    [ -n "$src" ] || fail "gt-gps.jpg is not on the source"
     rows "$T" | grep -qxF "$src" || fail "date taken or modification time differ: $src"
 }
 
