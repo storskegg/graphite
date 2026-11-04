@@ -31,6 +31,18 @@ releases yet.
 - `android/`: setup over the cable. The new phone installs graphite on the old
   one with its own adb client when the old phone has USB debugging on.
 - `core-ffi/`: wraps `strip/` (memory-mapped files, both hashes on open).
+- `android/`: live progress during the copy and the verification on both phones
+  (bytes, MB/s, time left, current file); the old phone shows the new phone's
+  verification from progress messages. Per-phase timing in the log after each copy.
+- `android/`: the new phone requests the next small file (16 MB or less) while
+  it finishes the current one, so the old phone reads and sends it meanwhile.
+- `android/`: the no-duplicates rule runs both ways: after an earlier stripping
+  run, "Keep all metadata" skips an original whose stripped copy is there.
+- `android/emulator-test.sh`: the media flow end to end on two emulators (API 37
+  and API 30) over a debug-only TCP transport: all three metadata choices, a
+  second run, resume after a reset socket, space and battery refusals, removal.
+  A device test records what MediaStore does with `DATE_TAKEN`. CI: Android unit
+  tests on every push, the emulator test on request.
 
 ### Fixed
 
@@ -39,3 +51,11 @@ releases yet.
   Removed `ilst` items each became a `free` atom, and Android's parser rejects
   an `ilst` with two items of the same type. They now share one `free` atom
   after the `ilst`. `STRIPPER_VERSION` is 2.
+- `android/`, from the final pass on the phones: removal now gets every approved
+  item into the trash (Android 17 refused items whose MediaStore MIME type
+  didn't match their name; graphite corrects the type, never the file); a
+  resume no longer waits 2 minutes for a USB permission callback; Done on the
+  last screen starts a new session on both phones; setup no longer offers to
+  reinstall graphite when it is already there; a refusal on the new phone (no
+  space, low battery) reaches the old phone before the link closes; the status
+  line no longer redraws twice a second.

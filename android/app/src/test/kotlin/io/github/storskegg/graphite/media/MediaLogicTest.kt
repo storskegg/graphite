@@ -286,6 +286,31 @@ class ReceiptsTest {
         val back = ManifestMsg.decode(m.encode())
         assertTrue(back.signed.contentEquals(m.signed))
         assertEquals(m.unremovable, back.unremovable)
+        val p = ProgressMsg("2,140 of 5,485 files: DCIM/a.jpg", 7, 9, "7 B of 9 B at 1 MB/s")
+        assertEquals(p, ProgressMsg.decode(p.encode()))
+    }
+
+    @Test fun progressFromAnOlderBuildHasNoLabel() {
+        val old = io.github.storskegg.graphite.util.BinWriter().str("Hashing").i64(1).i64(2).finish()
+        assertEquals(ProgressMsg("Hashing", 1, 2, ""), ProgressMsg.decode(old))
+    }
+
+    @Test fun phasesSumPerNameAndReportTheRest() {
+        var now = 0L
+        val p = Phases { now }
+        p.time("write") { now += 2_000_000_000 }
+        p.time("publish") { now += 500_000_000 }
+        p.time("write") { now += 1_000_000_000 }
+        now += 1_500_000_000
+        assertEquals("5.0 s in all: write 3.0 s, publish 0.5 s, other 1.5 s", p.summary())
+    }
+
+    @Test fun rateAndTimeLeft() {
+        assertEquals("", Meter.rateAndLeft(0, 100, 10.0))
+        assertEquals("", Meter.rateAndLeft(50, 100, 0.5))
+        assertEquals(" at 10 MB/s", Meter.rateAndLeft(20_000_000, 100_000_000, 2.0))
+        assertEquals(" at 10 MB/s, about 3 minutes left", Meter.rateAndLeft(100_000_000, 1_900_000_000, 10.0))
+        assertEquals(" at 10 MB/s", Meter.rateAndLeft(100_000_000, 100_000_000, 10.0))
     }
 }
 

@@ -27,6 +27,8 @@ The build compiles `core-ffi/` (which wraps `core/` and `strip/`) for arm64 with
 cargo-ndk, then generates the Kotlin bindings from the built library with
 uniffi. Cargo is taken from `$CARGO`, else `~/.cargo/bin/cargo`. Only
 `arm64-v8a` is built: every phone graphite targets is 64-bit ARM.
+`-Pgraphite.x86_64=true` adds `x86_64` (with `rustup target add
+x86_64-linux-android`), for emulators on x86 machines.
 
 The APK is `app/build/outputs/apk/debug/app-debug.apk`. Install it on both
 phones; or install it on the new phone only and let it install itself on the
@@ -67,7 +69,14 @@ adb shell am start -n io.github.storskegg.graphite/.MainActivity --es test_scope
 ```
 
 An empty value clears it. Both phones show "TEST SCOPE" while it is set, and
-the cable setup passes it on to the old phone. Release builds ignore it.
+the cable setup passes it on to the old phone. Release builds ignore it, as
+they ignore the other test extras:
+
+| Extra | Effect |
+|---|---|
+| `test_role target` or `source` | Forces the role (an emulator is never GrapheneOS) |
+| `test_tcp listen:PORT` or `HOST:PORT` | Links over a TCP socket instead of USB (`usb/TestTransport.kt`, in the debug source set only; release builds have a stub and no network permission) |
+| `test_free_bytes N` | Pretends the new phone has N bytes free (`x` clears it) |
 
 ## Layout
 
@@ -93,17 +102,69 @@ the cable setup passes it on to the old phone. Release builds ignore it.
 | JNA | 5.19.1 | uniffi's Kotlin bindings call the Rust library through JNA |
 | memmap2 | 0.9.12 | `core-ffi/`: memory-maps files for the stripper and hashing, so videos aren't read into memory. Depends only on `libc` |
 | JUnit | 4.13.2 | Unit tests (JVM only) |
+| AndroidX Test runner | 1.6.2 | Device tests only (`app/src/androidTest`), not in the APK |
+| AndroidX Test JUnit | 1.2.1 | Device tests only: the JUnit 4 runner for them |
 
-No AndroidX: the UI is plain Android views and the platform BiometricPrompt.
-SQLite (the hash cache) and the Keystore are the platform's.
+The app itself uses no AndroidX: the UI is plain Android views and the platform
+BiometricPrompt. SQLite (the hash cache) and the Keystore are the platform's.
+`android.useAndroidX=true` is only there for the test libraries.
 
 ## Tests
 
 JVM unit tests (`app/src/test/`): frames and the link (handshake discarding
 leftovers, windowing, lost and resent records, resume after EIO, a restarted
-peer), comparison, preflight maths, the journal, receipt mapping and the wire
-messages. `core-ffi` has Rust tests for the wrapper and the stripped-file
-reader (`cargo test` in `core-ffi/`).
+peer), comparison (including the no-duplicates rule both ways), preflight
+maths, the journal, receipt mapping, the wire messages, progress and timing,
+the cable setup's version check and the session loop. `core-ffi` has Rust tests
+for the wrapper and the stripped-file reader (`cargo test` in `core-ffi/`).
+
+### Emulator test
+
+```bash
+android/emulator-test.sh            # keep again strip display resume space battery removal
+android/emulator-test.sh speed      # timing only: 400 small photos and 80 MB
+```
+
+One command runs the media flow end to end on two emulators: the target on
+the latest image (API 37) and the source on API 30, the oldest graphite
+supports. They link over the debug-only TCP transport (`test_tcp`, the target
+listening behind `adb forward`), with the roles forced by `test_role` and the
+scope limited to `graphite-test`. The script builds the debug APK, creates and
+boots its own AVDs (`graphite-target`, `graphite-source`), sets a PIN for the
+user-presence prompt and types it, seeds synthetic media from
+`strip/tests/fixtures`, and drives both screens with `uiautomator`. It checks
+receipts and MediaStore rows:
+
+| Scenario | Checks |
+|---|---|
+| keep | "Keep all metadata": 9 copied and verified, the duplicate once; date taken and modification time as on the source |
+| again | A second run copies nothing |
+| strip | "Remove location and identifiers": photo and video dates kept |
+| display | "Remove all but what display needs": no date taken left |
+| resume | The source's connection is reset mid-copy (iptables on the rooted source); the link resumes and the copy verifies |
+| space | Refused when the target looks full (`test_free_bytes`); the source shows why |
+| battery | Refused at 5 %, goes on after the battery is back and "Check again" |
+| removal | The source moves the verified files to its trash (it taps Android's own dialog, test-only) |
+
+Real phones stay the test for AOA, the USB role, the cable install and
+attestation. `KEEP=1` leaves the emulators running; `HEADLESS=0` shows them;
+`GRAPHITE_APK=path` tests a given APK. Emulator quirks it works around: the API
+37 target boots without Wi-Fi (the netsim forwarder hangs while another
+emulator holds it), and the API 30 source runs permissive (its updated
+MediaProvider module is denied its pass-through mount by the image's older
+SELinux policy, so nothing would be scanned). In CI (`.github/workflows/android.yml`)
+it runs on request only (`workflow_dispatch`), on x86_64 images with KVM, until
+it has proven itself there; the unit tests run on every push.
+
+### Device test
+
+`app/src/androidTest/.../DateTakenTest.kt` records what MediaStore makes of
+`DATE_TAKEN` for a copy graphite publishes (see "File dates" in
+[docs/media.md](../docs/media.md)):
+
+```bash
+ANDROID_SERIAL=emulator-5580 ./gradlew :app:connectedDebugAndroidTest
+```
 
 ## Verified on device
 
@@ -140,36 +201,56 @@ changed on the source); `clip.mov` became `clip.mov.mp4` (MIME type now from
 the extension); unticked folders could not be ticked again; the adb client
 re-read a header after reusing its buffer; Android's trash request refuses
 non-media items; an accepted trash request silently skipped `clip.mov` (a `.mov`
-MediaStore types `video/mp4`) while graphite counted it as trashed. Removal now
-checks each item's `IS_TRASHED` afterwards and trashes approved items Android
-skipped directly; **that fallback is not yet verified on device**.
+MediaStore types `video/mp4`) while graphite counted it as trashed.
 
-Replugging the cable for the setup handed USB control back to the old phone
-twice. Apps can't change the USB role (it needs the system permission
-`MANAGE_USB`), so graphite now detects it and names the exact taps ("USB
-controlled by" → "This device" on the new phone); that wording is not yet
-tested by a user.
+### Final pass (3 November 2026)
 
-Fixed in `strip/` (9768c6b, stripper version 2): **stripped videos had no
-`DATE_TAKEN`** (nor a duration). Each removed `ilst` item became its own `free`
-atom, and Android's MP4 extractor rejects an `ilst` holding two items of the
-same type. Removed items now share one `free` atom; checked on both phones.
-Videos sent by an older build were stripped by version 1 and still lack the date.
+Same phones and cable, test files in `graphite-test` folders only (items 1-7),
+then the real library (item 8, copy only).
 
-Open question: **does wireless debugging on the old phone break the cable
-install?** The install that worked had two changes at once: the fix for the
-adb client's buffer bug, and wireless debugging turned off on the Pixel 7 Pro.
-Next time the cable install is tested, run it once with wireless adb connected
-to the old phone, using the fixed build. If it fails, graphite should detect
-that and tell the user to turn wireless debugging off; if it passes, the buffer
-bug was the whole cause. Until then, disconnect wireless adb from the old phone
-(`adb disconnect <serial>`) before a cable-install test.
+| Item | Result |
+|---|---|
+| 1. Install over the cable with wireless adb connected to the old phone | Passed (1.5 s). The earlier failures were the adb client's buffer bug alone; wireless debugging can stay on |
+| 2. Wording when the old phone has taken USB control | Shown after a forced role swap and followed through to pairing; no comments on the wording itself |
+| 3. Removal of items Android's trash request skips | Passed. `clip.mov` and a `.3gp`, which MediaStore had typed `video/mp4`, were refused by Android 17 ("Moving files to .trash-storage directly") until graphite corrected their MIME type from the name; then 5 of 5 moved to the trash. The files themselves are not changed |
+| 4. Videos keep `DATE_TAKEN` after stripping (stripper version 2) | Passed: `video.mp4` and `clip.mov` show 2020-01-02 on the target |
+| 5. "Keep all metadata" and "Remove all but what display needs" | Passed. Display: AVIF and 3GP arrived with no date taken, the video's creation time zeroed, GPS and make/model gone |
+| 6. Failures | Cable pull simulated by dropping the link mid-copy (a USB data-role swap): resumed, the 29 unacknowledged records resent, verified. Not enough space and low battery: refused with the right screens. A file renamed on the old phone: counted as already copied |
+| 7. `Android/media` opt-in and a RAW file | Passed: the opt-in folder copied; the DNG skipped after its question (receipt: not copied) |
+| 8. The real library, full scope, copy only | Passed, see below |
 
-Not verified on device:
+Found and fixed during the pass: progress moved only per file (now per chunk,
+four times a second, with MB/s and time left); a resume stalled 2 minutes
+waiting for the USB permission callback (now polled); "Keep all" after an
+earlier stripping run saved originals next to the stripped copies as "(1)"
+files (the no-duplicates rule now runs both ways, see
+[docs/media.md](../docs/media.md)); setup offered to install graphite when it
+was already there, just slow to answer (it now checks the installed version and
+waits 30 s); Done on the new phone's last screen did nothing (a finished
+session now goes back to the start, on both phones); verification showed no
+progress for minutes (both phones now show it, the old phone from the new
+phone's progress messages); the old phone's "nothing was removed" screen after
+Keep them was one tap too many.
 
-- Motion photos, camera HEIC and DNG from real cameras (only `strip/`'s
-  synthetic fixtures); the RAW "copy as they are or skip" question.
-- "Keep all metadata" and "Remove all but what display needs" end to end.
-- `Android/media/` opt-in, running out of space mid-copy, the battery
-  refusal, renamed (unsafe) names, resume after pulling the cable mid-copy.
-- A large real library (speed and hashing time at scale).
+**The real library** (Pixel 7 Pro to Pixel 10 Pro XL, full scope, "Remove
+location and identifiers"):
+
+- 5,612 copied and verified, 27 already on the new phone, 23 not copied
+  (unticked); 127 duplicates copied once. 56.7 GB.
+- Copy 40 minutes (about 24 MB/s on average, 26 MB/s at the end, against
+  75-83 MB/s with large test files), then verification about 8 minutes. No
+  link drops, no retries; both phones at thermal status 0 afterwards.
+- 8 photos' date taken differs from the old phone's: see "File dates" in
+  [docs/media.md](../docs/media.md). The old phone's values were written by
+  other apps (Android's restore app, a browser), not derived from the files.
+- Nothing was removed from either phone.
+
+Still to check on the phones (next phone session):
+
+- The speed work: per-phase timing (`copy phases:` and `send phases:` in the
+  log) on the same library, and whether requesting small files ahead helps there.
+- Live verification progress and Done on both phones' last screens.
+- The `DATE_TAKEN` fix, if one is chosen.
+- Running out of space mid-copy (only the up-front refusal was tested).
+- Motion photos, camera HEIC and DNG from real cameras.
+- Attestation (the role check is unattested; the seam is in `role/`).

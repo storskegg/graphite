@@ -80,6 +80,8 @@ class MainActivity : Activity() {
     private fun handleIntent(i: Intent?) {
         if (i?.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) log("accessory attached (launched by the other phone)")
         if (controller.debuggable && i?.hasExtra("test_scope") == true) controller.testScope = i.getStringExtra("test_scope")
+        if (controller.debuggable && i?.hasExtra("test_role") == true) controller.testRole = i.getStringExtra("test_role")
+        if (controller.debuggable && i?.hasExtra("test_tcp") == true) controller.testTcp = i.getStringExtra("test_tcp")
         if (controller.debuggable && i?.hasExtra("test_free_bytes") == true) controller.testFreeBytes = i.getStringExtra("test_free_bytes")?.toLongOrNull()
     }
 
@@ -105,7 +107,8 @@ class MainActivity : Activity() {
     private fun render() {
         val c = controller
         val st = c.status
-        statusView.text = listOf(st.role, st.usb, st.auth).filter { it.isNotEmpty() }.joinToString("\n")
+        val statusText = listOf(st.role, st.usb, st.auth).filter { it.isNotEmpty() }.joinToString("\n")
+        if (statusView.text.toString() != statusText) statusView.text = statusText
         val s = c.screen
         if (s === drawn) return
         drawn = s

@@ -220,7 +220,8 @@ For each file *to copy*:
    still match the manifest. A file that changed since the manifest is not sent;
    it is reported as *changed on the old phone* and copied on the next run.
 3. Bytes streamed in; `fsync`; BLAKE3 recomputed and compared to the manifest's
-   sent hash; a mismatch deletes the pending entry and retries once.
+   sent hash; a mismatch deletes the pending entry and retries once, after the
+   other files.
 4. The source's modification time set on the file (`File.setLastModified`, which
    works on the app's own pending file); then `IS_PENDING = 0`.
 
@@ -229,8 +230,12 @@ write `DATE_TAKEN`: MediaStore overwrites it at publish and ignores later update
 The scanner derives it from a photo's EXIF (and from the modification time when
 EXIF has no time-zone offset) and from a video's MP4 `mvhd` creation time, so
 identical bytes plus the restored modification time give the same `DATE_TAKEN` as on the source. An item whose source value came
-from the app that saved it, not from its bytes, ends up with none, and galleries
-sort it by modification time. See [spike.md](spike.md#5-mediastore-dates).
+from the app that saved it, not from its bytes, can end up with another date or
+none; see [File dates](#when-the-old-phones-date_taken-came-from-an-app) and
+[spike.md](spike.md#5-mediastore-dates).
+
+While the target finishes one small file, the old phone is already sending the
+next (see [Speed notes](#speed-notes)).
 
 If the target runs out of space anyway (another app filled it), the copy pauses and
 asks; nothing half-written is published.
@@ -243,6 +248,10 @@ bytes through MediaStore, hashes them **without the cache**, and checks the entr
 published, not pending and not trashed. This catches a bad write, or a file the user
 changed or deleted on the target during the transfer. It also compares `DATE_TAKEN`
 with the manifest and notes any difference.
+
+Reading back a large library takes minutes, so both phones show its progress: files
+and bytes verified, the rate, the time left and the current file. The target sends
+it to the source as progress messages until the receipt.
 
 The **receipt** gives every manifest entry one status:
 
@@ -296,10 +305,39 @@ manifest carries each file's modification time and MediaStore `DATE_ADDED` and
 | Date | Where it sorts | On the target |
 |---|---|---|
 | Modification time (`mtime`, MediaStore `DATE_MODIFIED`) | File managers; galleries' fallback | **Restored** from the source before publishing (proven in the [spike](spike.md#5-mediastore-dates)) |
-| `DATE_TAKEN` | Galleries | **The same**, because the scanner derives it from the bytes (EXIF, or a video's `mvhd` creation time) and the restored modification time (see the copy phase above). Not under **Remove all but what display needs**, which removes it on purpose |
+| `DATE_TAKEN` | Galleries | **The same**, because the scanner derives it from the bytes (EXIF, or a video's `mvhd` creation time) and the restored modification time (see the copy phase above). Not under **Remove all but what display needs**, which removes it on purpose, and not where an app on the old phone set it (below) |
 | `DATE_ADDED` | "Recently added" views, some galleries | **Set by MediaProvider at insert; nothing can change it.** Apps cannot, and neither can the shell: MediaProvider drops `date_added` from a shell `content update` or `content insert` ([spike](spike.md#date_added-from-the-shell)). Files are copied in the source's `DATE_ADDED` order, so the relative order survives, at one-second resolution, though the values become the copy time |
 | Access time (`atime`) | Nothing users see | Not restored |
 | Change time and creation time (`ctime`, `btime`) | `ls -c`, `stat` | **Cannot be set** by any app or by the shell; the kernel sets them. Only root could, by changing the clock |
+
+### When the old phone's `DATE_TAKEN` came from an app
+
+The scanner derives `DATE_TAKEN` from EXIF `DateTimeOriginal` with
+`OffsetTimeOriginal`. Without an offset, it takes the time zone from the file's
+modification time, to the nearest 15 minutes, and only if the two are within a
+day; otherwise there is no date taken. What an app writes to `DATE_TAKEN` is
+overwritten when the item is published, and an update afterwards is refused
+(0 rows). `DateTakenTest` (`android/app/src/androidTest`) checks all of this on
+API 37; the [spike](spike.md#5-mediastore-dates) found the same on the phones.
+
+So where the old phone's `DATE_TAKEN` came from the app that saved the photo,
+and not from the scanner, the copy can differ. In the real-library run (3
+November 2026, "Remove location and identifiers") that was 8 of 5,612 files,
+all JPEGs with an EXIF date and no offset: 7 written by Android's restore app,
+one by a browser. 4 came out 15 minutes to 3.5 hours off (the scanner's guessed
+zone), and 4 with no date (modification time days after the EXIF date).
+"Remove location and identifiers" keeps `OffsetTime*`, so stripping did not
+cause this. Not yet checked: whether the scanner also uses the GPS time for the
+zone, which that choice removes.
+
+**Open, for the user to decide.** graphite can still make the scanner derive
+the old phone's date: for just the files whose `DATE_TAKEN` came out different,
+set the copy's modification time to the old phone's `DATE_TAKEN` and rescan.
+`DateTakenTest` shows the scanner then derives it exactly. The cost is that
+those files lose their own modification time, which this section otherwise
+keeps: file managers would show when the photo was taken instead of when the
+file was last changed. Until decided, graphite keeps the modification time, and
+the receipt notes each file whose date taken differs.
 
 The receipt notes every file whose modification time or `DATE_TAKEN` did not come
 out as on the source. It does not list `DATE_ADDED`, which never matches; it says
@@ -333,6 +371,19 @@ may take minutes for that, so the UI shows progress for it separately from the c
 With a stripping choice, the source strips in memory to compute the sent hash, then
 strips again while sending, so the stripped files never touch its storage. Only
 metadata is parsed, so this adds little to the reads.
+
+Copying is one request per file, and each file costs fixed work on both phones:
+the source re-reads it to check it still matches the manifest, and the target
+inserts a pending item, syncs, reads it back, publishes it (which runs the media
+scanner) and journals it. A library of small photos is bound by that, not by the
+cable: the real-library run (3 November 2026) averaged about 24 MB/s against
+75-83 MB/s for large test files. To overlap it, the target requests the next
+file as soon as the old phone starts answering the current one, if that next
+file is 16 MB or less (it waits in memory until its turn; larger files gain
+little and would cost memory). On two emulators, 410 small files and 80 MB
+copied in 30.9 s instead of 47.1 s. After each copy both phones log the time per
+phase (`copy phases:`, `send phases:`), which is how the next phone run will
+show where the rest goes.
 
 ## Later steps (not now)
 

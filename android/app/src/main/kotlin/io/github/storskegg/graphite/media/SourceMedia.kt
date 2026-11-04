@@ -68,8 +68,9 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
         var sent = 0L
         var count = 0
         val meter = Meter(ctl, "Sending", t.bytesToCopy.toLong(), t.toCopy.toInt())
+        phases = Phases()
         while (true) {
-            val m = ch.receive()
+            val m = phases.time("wait for the new phone") { ch.receive() }
             when (m.type) {
                 Msg.REQUEST -> {
                     val i = BinReader(m.body).u32().toInt()
@@ -86,10 +87,19 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
                 else -> throw IOException("unexpected message 0x%02x".format(m.type))
             }
         }
+        log("send phases: ${phases.summary()}")
 
         // 5. The receipt.
         ctl.show(Screen("Verifying", "The new phone is reading back every file it vouches for."))
-        val signedReceipt = Flows.expect(ch, Msg.RECEIPT).body
+        var m = ch.receive()
+        while (m.type == Msg.PROGRESS) {
+            val pm = ProgressMsg.decode(m.body)
+            ctl.show(Screen("Verifying", "New phone is verifying: ${pm.text}", progress = Progress(pm.done, pm.total, pm.label)))
+            m = ch.receive()
+        }
+        if (m.type == Msg.ERROR) throw io.github.storskegg.graphite.session.PeerAbortException(BinReader(m.body).str())
+        if (m.type != Msg.RECEIPT) throw IOException("expected the receipt, got 0x%02x".format(m.type))
+        val signedReceipt = m.body
         val receipt = try {
             p.session.verifyReceipt(signedReceipt, signedManifest, signedPlan)
         } catch (e: io.github.storskegg.graphite.ffi.CoreException) {
@@ -122,7 +132,7 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
                     buttons = listOf("Keep them", "Back")))
                 if (sure.button == "Back") continue
             }
-            ctl.ask(Screen("Done", "Nothing was removed from this phone.", buttons = emptyList()))
+            log("nothing removed")
             return
         }
     }
@@ -188,8 +198,10 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
     )
 
     /** Re-reads the file, strips it again if chosen, and sends it only if both hashes still match the manifest. */
+    private var phases = Phases()
+
     private fun sendFile(i: Int, f: SourceFile, e: ManifestEntry, choice: MetadataChoice, asIs: Boolean, onBytes: (Long) -> Unit) {
-        val opened = try { open(f, choice, asIs) } catch (x: Exception) {
+        val opened = try { phases.time("open and hash") { open(f, choice, asIs) } } catch (x: Exception) {
             log("send ${f.path}: $x")
             ch.send(Msg.FILE_END, BinWriter().u32(i).u8(FileEnd.UNREADABLE).finish())
             return
@@ -204,9 +216,9 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
             val piece = (ch.maxSingleChunkBody - 4).toUInt()
             var off = 0UL
             while (true) {
-                val b = sf.read(off, piece)
+                val b = phases.time("read") { sf.read(off, piece) }
                 if (b.isEmpty()) break
-                ch.send(Msg.FILE_DATA, BinWriter().u32(i).raw(b).finish())
+                phases.time("send") { ch.send(Msg.FILE_DATA, BinWriter().u32(i).raw(b).finish()) }
                 off += b.size.toUInt()
                 onBytes(off.toLong())
             }
@@ -228,7 +240,7 @@ class Removal(private val ctl: Controller) {
             choices = byFolder.map { (f, idx) -> Choice(f, "$f (${idx.size} files, ${formatBytes(idx.sumOf { manifest.files[it].original.size.toLong() })})") },
             buttons = listOf("Move to trash", "Cancel")))
         if (a.button != "Move to trash" || a.checked.isEmpty()) {
-            ctl.ask(Screen("Done", "Nothing was removed from this phone.", buttons = emptyList()))
+            ctl.ask(Screen("Done", "Nothing was removed from this phone.", buttons = listOf("Done")))
             return
         }
         ctl.requireAuth("moves files to the trash", fresh = true)
@@ -288,7 +300,7 @@ class Removal(private val ctl: Controller) {
             (if (failed > 0) "\n$failed could not be moved to the trash: Android refused (it can happen with a file whose " +
                 "type doesn't match its name, such as a .mov stored as MP4). They are still on this phone, untouched:\n" +
                 notTrashed.take(10).joinToString("\n") { paths[it.uri] ?: it.uri.toString() } else ""),
-            buttons = emptyList()))
+            buttons = listOf("Done")))
     }
 
     private fun isTrashed(uri: android.net.Uri): Boolean {

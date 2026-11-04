@@ -55,9 +55,9 @@ class TargetStore(private val c: Context) {
     }
 
     /** Hash read through MediaStore, never the cache (verification). */
-    fun hashUncached(id: Long): String? = runCatching {
+    fun hashUncached(id: Long, onBytes: (Long) -> Unit = {}): String? = runCatching {
         cr.openFileDescriptor(ContentUris.withAppendedId(files, id), "r")!!.use { pfd ->
-            FileInputStream(pfd.fileDescriptor).use { ins -> hashStream(ins) }
+            FileInputStream(pfd.fileDescriptor).use { ins -> hashStream(ins, onBytes) }
         }
     }.onFailure { log("verify $id: $it") }.getOrNull()
 
@@ -119,13 +119,17 @@ class TargetStore(private val c: Context) {
     }
 
     companion object {
-        fun hashStream(ins: java.io.InputStream): String {
+        /** [onBytes] gets the bytes read so far, per chunk. */
+        fun hashStream(ins: java.io.InputStream, onBytes: (Long) -> Unit = {}): String {
             val h = FileHasher()
             val buf = ByteArray(1 shl 20)
+            var read = 0L
             while (true) {
                 val n = ins.read(buf)
                 if (n < 0) break
                 h.update(if (n == buf.size) buf else buf.copyOf(n))
+                read += n
+                onBytes(read)
             }
             return h.finalize().hex()
         }

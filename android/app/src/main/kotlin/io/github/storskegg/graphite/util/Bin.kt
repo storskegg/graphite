@@ -35,6 +35,7 @@ class BinReader(private val b: ByteArray, start: Int = 0) {
     }
     fun str(): String = String(bytes(), Charsets.UTF_8)
     fun optI64(): Long? = if (u8() == 0) null else i64()
+    fun more(): Boolean = buf.hasRemaining()
     fun rest(): ByteArray = ByteArray(buf.remaining()).also { buf.get(it) }
     val position get() = buf.position()
     val remaining get() = buf.remaining()

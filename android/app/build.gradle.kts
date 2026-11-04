@@ -2,6 +2,9 @@ import javax.inject.Inject
 
 plugins { id("com.android.application") }
 
+// Phones are arm64. `-Pgraphite.x86_64=true` adds x86_64 for the emulator harness on Linux CI runners.
+val graphiteAbis = listOf("arm64-v8a") + if (providers.gradleProperty("graphite.x86_64").orNull == "true") listOf("x86_64") else emptyList()
+
 android {
     namespace = "io.github.storskegg.graphite"
     compileSdk = 37
@@ -12,7 +15,8 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
-        ndk { abiFilters += "arm64-v8a" }
+        ndk { abiFilters += graphiteAbis }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     testOptions { unitTests.isReturnDefaultValues = true }
 }
@@ -21,6 +25,9 @@ dependencies {
     // uniffi's Kotlin bindings call into the Rust core through JNA.
     implementation("net.java.dev.jna:jna:5.19.1@aar")
     testImplementation("junit:junit:4.13.2")
+    // Device tests (app/src/androidTest): what MediaStore does with dates, on an emulator.
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
 
 /**
@@ -34,6 +41,7 @@ abstract class RustCore : DefaultTask() {
     @get:Internal abstract val crate: DirectoryProperty
     @get:Internal abstract val ndk: DirectoryProperty
     @get:Input abstract val cargo: Property<String>
+    @get:Input abstract val abis: ListProperty<String>
 
     @get:OutputDirectory abstract val jniLibs: DirectoryProperty
     @get:OutputDirectory abstract val kotlin: DirectoryProperty
@@ -47,8 +55,8 @@ abstract class RustCore : DefaultTask() {
         exec.exec {
             workingDir = dir
             environment("ANDROID_NDK_HOME", ndk.get().asFile.path)
-            commandLine(cargo.get(), "ndk", "-t", "arm64-v8a", "-P", "30", "-o", libs.path,
-                "build", "--release", "--locked")
+            commandLine(listOf(cargo.get(), "ndk") + abis.get().flatMap { listOf("-t", it) } +
+                listOf("-P", "30", "-o", libs.path, "build", "--release", "--locked"))
         }
         val out = kotlin.get().asFile.apply { deleteRecursively(); mkdirs() }
         exec.exec {
@@ -65,6 +73,7 @@ val repo: File = rootDir.parentFile
 val rustCore = tasks.register<RustCore>("rustCore") {
     crate.set(File(repo, "core-ffi"))
     ndk.set(androidComponents.sdkComponents.ndkDirectory)
+    abis.set(graphiteAbis)
     cargo.set(listOf(System.getenv("CARGO"), "${System.getProperty("user.home")}/.cargo/bin/cargo")
         .firstOrNull { it != null && File(it).canExecute() } ?: "cargo")
     sources.from(

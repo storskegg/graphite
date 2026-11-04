@@ -73,8 +73,8 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         val start = ctl.ask(Screen("Ready to copy", summary(plan, inv) + "\n\nThe old phone shows the same summary.",
             buttons = listOf("Start copy", "Cancel")))
         if (start.button != "Start copy") {
-            ch.send(Msg.ERROR, BinWriter().str("the copy was cancelled on the new phone").finish())
-            throw StoppedException()
+            ch.stop(Msg.ERROR, BinWriter().str("the copy was cancelled on the new phone").finish())
+            throw StoppedException("The copy was cancelled; nothing was copied.")
         }
         ctl.requireAuth("writes files")
         ch.send(Msg.START, ByteArray(0))
@@ -88,17 +88,31 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         copy(entries, order, outcomes, copiedIds)
         ch.send(Msg.COPY_DONE, ByteArray(0))
 
-        // 5. Verification, without the cache.
+        // 5. Verification, without the cache, with progress here and on the old phone.
         val notes = HashMap<Int, String>()
+        val present = compared.indices.filter { statuses[it] == PlanStatus.PRESENT }
+        val toVerify = copiedIds.keys.size + present.size
+        val verifyBytes = copiedIds.keys.sumOf { entries[it].sent.size.toLong() } + present.sumOf { entries[it].sent.size.toLong() }
+        val meter = Meter(ctl, "Verifying", verifyBytes, toVerify) { ch.send(Msg.PROGRESS, it.encode()) }
+        var verified = 0L
+        var n = 0
+        fun checked(i: Int, check: () -> Outcome): Outcome {
+            n++
+            val before = verified
+            meter.update(before, n, entries[i].path, force = true)
+            return check().also { verified = before + entries[i].sent.size.toLong() }
+        }
         for ((i, id) in copiedIds) {
-            outcomes[i] = verify(i, id, manifest, notes)
+            outcomes[i] = checked(i) { verify(i, id, manifest, notes) { got -> meter.update(verified + got, n, entries[i].path) } }
             if (outcomes[i] is Outcome.Verified) journal.verified(entries[i].sent.blake3.hex())
         }
-        compared.forEachIndexed { i, c ->
-            if (statuses[i] == PlanStatus.PRESENT) {
-                outcomes[i] = verify(i, c.match!!.id, manifest, notes, check = false, note = c.note, alsoAccept = c.matchHash)
+        for (i in present) {
+            val c = compared[i]
+            outcomes[i] = checked(i) {
+                verify(i, c.match!!.id, manifest, notes, check = false, note = c.note, alsoAccept = c.matchHash) { got -> meter.update(verified + got, n, entries[i].path) }
             }
         }
+        if (toVerify > 0) meter.update(verifyBytes, toVerify, "done", force = true)
         val receiptEntries = Receipts.build(entries, statuses, outcomes, primaryOf, notes)
         val receipt = Receipt(manifestHash(mm.signed), planHash(signedPlan), receiptEntries)
         val signedReceipt = p.session.signReceipt(receipt, mm.signed, signedPlan)
@@ -215,7 +229,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
                         "or free space on this phone and check again.",
                     choices = byFolder.map { (f, n) -> Choice(f, "$f (${formatBytes(n)})", checked = f in now) },
                     buttons = listOf("Check again", "Stop")))
-                if (a.button == "Stop") { ch.send(Msg.ERROR, BinWriter().str("not enough space on the new phone").finish()); return null }
+                if (a.button == "Stop") { ch.stop(Msg.ERROR, BinWriter().str("not enough space on the new phone").finish()); return null }
                 apply(a.checked)
                 continue
             }
@@ -224,7 +238,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             if (verdict.refuse != null) {
                 val a = ctl.ask(Screen("Battery too low", verdict.refuse.replaceFirstChar { it.uppercase() },
                     buttons = listOf("Check again", "Stop")))
-                if (a.button == "Stop") { ch.send(Msg.ERROR, BinWriter().str("battery too low").finish()); return null }
+                if (a.button == "Stop") { ch.stop(Msg.ERROR, BinWriter().str("battery too low").finish()); return null }
                 continue
             }
             val warn = verdict.warn?.let { "\n\nBattery: $it" }.orEmpty()
@@ -236,7 +250,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
                 "\n\nUntick folders you don't want copied, then continue.",
                 choices = folders.map { Choice(it, it, checked = it in now) },
                 buttons = listOf("Continue", "Stop")))
-            if (a.button == "Stop") { ch.send(Msg.ERROR, BinWriter().str("stopped on the new phone").finish()); return null }
+            if (a.button == "Stop") { ch.stop(Msg.ERROR, BinWriter().str("stopped on the new phone").finish()); return null }
             // A changed selection is shown again with new totals before anything is signed.
             if (a.checked != now) { apply(a.checked); continue }
             val signedManifest = mm.signed
@@ -260,62 +274,93 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         val total = order.sumOf { entries[it].sent.size.toLong() }
         var done = 0L
         val meter = Meter(ctl, "Copying", total, order.size)
+        phases = Phases()
+        // Files in request order; a file that failed once goes again at the end.
+        val queue = ArrayDeque(order)
+        val attempts = HashMap<Int, Int>()
+        var n = 0
         var stopRest = false
-        for ((n, i) in order.withIndex()) {
+        ahead = -1
+        while (queue.isNotEmpty()) {
+            val i = queue.removeFirst()
             if (stopRest) { outcomes[i] = Outcome.NotCopied(NotCopiedReason.DID_NOT_FIT); continue }
             val e = entries[i]
-            var attempt = 0
-            while (true) {
-                attempt++
-                meter.update(done, n + 1, e.path, force = true)
-                val before = done
-                val r = try { receiveOne(i, e) { got -> meter.update(before + got, n + 1, e.path) } } catch (x: OutOfSpace) {
-                    val a = ctl.ask(Screen("This phone is full", "Another app used the space while copying. Nothing " +
-                        "half-written is kept. Free some space and retry, or stop copying (the rest is reported as did not fit).",
-                        buttons = listOf("Retry", "Stop copying")))
-                    if (a.button == "Retry") { attempt--; continue }
-                    stopRest = true
-                    Outcome.NotCopied(NotCopiedReason.DID_NOT_FIT) to null
+            val attempt = attempts.merge(i, 1, Int::plus)!!
+            if (attempt == 1) n++
+            meter.update(done, n, e.path, force = true)
+            val before = done
+            val next = queue.firstOrNull()
+            val r = try {
+                receiveOne(i, e, next?.takeIf { entries[it].sent.size.toLong() <= LOOKAHEAD_MAX }) { got -> meter.update(before + got, n, e.path) }
+            } catch (x: OutOfSpace) {
+                val a = ctl.ask(Screen("This phone is full", "Another app used the space while copying. Nothing " +
+                    "half-written is kept. Free some space and retry, or stop copying (the rest is reported as did not fit).",
+                    buttons = listOf("Retry", "Stop copying")))
+                if (a.button == "Retry") {
+                    attempts[i] = attempt - 1
+                    // After the file already requested ahead, if any: it is on its way.
+                    if (ahead >= 0) queue.add(1, i) else queue.addFirst(i)
+                    continue
                 }
-                val (o, id) = r
-                if (o is Outcome.NotCopied && o.reason == NotCopiedReason.FAILED && attempt < 2) { log("retrying ${e.path}: ${o.note}"); continue }
-                outcomes[i] = o
-                if (id != null) copiedIds[i] = id
-                break
+                stopRest = true
+                if (ahead >= 0) { drain(); ahead = -1 }
+                Outcome.NotCopied(NotCopiedReason.DID_NOT_FIT) to null
             }
+            val (o, id) = r
+            if (o is Outcome.NotCopied && o.reason == NotCopiedReason.FAILED && attempt < 2) {
+                log("retrying ${e.path} later: ${o.note}")
+                queue.addLast(i)
+                continue
+            }
+            outcomes[i] = o
+            if (id != null) copiedIds[i] = id
             done += e.sent.size.toLong()
         }
+        log("copy phases: ${phases.summary()}")
     }
+
+    /** The file already requested before its turn, or -1. */
+    private var ahead = -1
+
+    private var phases = Phases()
 
     private class OutOfSpace : Exception()
 
-    /** Requests one file and writes it as a pending item; publishes it when the hash matches. */
-    private fun receiveOne(i: Int, e: io.github.storskegg.graphite.ffi.ManifestEntry, onBytes: (Long) -> Unit): Pair<Outcome, Long?> {
+    /**
+     * Requests one file and writes it as a pending item; publishes it when the hash matches.
+     * Once the old phone answers, [next] is requested too, so it is read and sent while this one
+     * is synced, read back and published; only small files, since they wait in memory meanwhile.
+     */
+    private fun receiveOne(i: Int, e: io.github.storskegg.graphite.ffi.ManifestEntry, next: Int?, onBytes: (Long) -> Unit): Pair<Outcome, Long?> {
         val sentHex = e.sent.blake3.hex()
-        ch.send(Msg.REQUEST, BinWriter().u32(i).finish())
-        var m = ch.receive()
+        if (ahead != i) ch.send(Msg.REQUEST, BinWriter().u32(i).finish())
+        ahead = -1
+        var m = phases.time("wait for the old phone") { ch.receive() }
+        if (m.type == Msg.ERROR) throw io.github.storskegg.graphite.session.PeerAbortException(BinReader(m.body).str())
+        check(BinReader(m.body).u32().toInt() == i) { "the old phone answered for another file" }
+        if (next != null) { ch.send(Msg.REQUEST, BinWriter().u32(next).finish()); ahead = next }
         if (m.type == Msg.FILE_END) return endWithoutData(m)
         check(m.type == Msg.FILE_BEGIN) { "expected FILE_BEGIN, got 0x%02x".format(m.type) }
-        val id = try { store.insertPending(Preflight.targetPath(e.path), e.mimeType) } catch (x: Exception) {
+        val id = try { phases.time("insert") { store.insertPending(Preflight.targetPath(e.path), e.mimeType) } } catch (x: Exception) {
             drain()
             return Outcome.NotCopied(NotCopiedReason.FAILED, "this phone's MediaStore refused it: ${x.message}") to null
         }
-        journal.pending(sentHex, id)
+        phases.time("journal") { journal.pending(sentHex, id) }
         var full = false
         var got = 0L
         try {
             store.openForWrite(id).use { pfd ->
                 FileOutputStream(pfd.fileDescriptor).use { out ->
                     while (true) {
-                        m = ch.receive()
+                        m = phases.time("receive") { ch.receive() }
                         if (m.type != Msg.FILE_DATA) break
-                        if (!full) try { out.write(m.body, 4, m.body.size - 4) } catch (x: IOException) {
+                        if (!full) try { phases.time("write") { out.write(m.body, 4, m.body.size - 4) } } catch (x: IOException) {
                             if (x.message?.contains("ENOSPC") == true || x.message?.contains("No space") == true) full = true else throw x
                         }
                         got += m.body.size - 4
                         onBytes(got)
                     }
-                    if (!full) TargetStore.sync(out)
+                    if (!full) phases.time("fsync") { TargetStore.sync(out) }
                 }
             }
         } catch (x: IOException) {
@@ -328,13 +373,13 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         val status = BinReader(m.body).run { u32(); u8() }
         if (status != FileEnd.OK) { discard(sentHex, id); return endOutcome(status) to null }
         // Read back what was written, not what was received.
-        val written = store.hashUncached(id)
+        val written = phases.time("read back") { store.hashUncached(id) }
         if (got != e.sent.size.toLong() || written != sentHex) {
             discard(sentHex, id)
             return Outcome.NotCopied(NotCopiedReason.FAILED, "hash did not match after writing") to null
         }
-        val touched = store.publish(id, e.modifiedMs)
-        journal.published(sentHex, id, e.original.blake3.hex())
+        val touched = phases.time("publish") { store.publish(id, e.modifiedMs) }
+        phases.time("journal") { journal.published(sentHex, id, e.original.blake3.hex()) }
         return Outcome.Verified(if (touched) "" else "modification time not restored") to id
     }
 
@@ -357,11 +402,12 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
     }
 
     /** Re-reads an item through MediaStore and checks it is published, not trashed, with the right bytes and dates. */
-    private fun verify(i: Int, id: Long, manifest: Manifest, notes: MutableMap<Int, String>, check: Boolean = true, note: String = "", alsoAccept: String? = null): Outcome {
+    private fun verify(i: Int, id: Long, manifest: Manifest, notes: MutableMap<Int, String>, check: Boolean = true, note: String = "",
+                       alsoAccept: String? = null, onBytes: (Long) -> Unit = {}): Outcome {
         val e = manifest.files[i]
         val row = store.row(id) ?: return Outcome.NotCopied(NotCopiedReason.FAILED, "gone from the new phone during the transfer")
         if (row.pending || row.trashed) return Outcome.NotCopied(NotCopiedReason.FAILED, if (row.trashed) "moved to the new phone's trash during the transfer" else "still pending")
-        val hex = store.hashUncached(id)
+        val hex = store.hashUncached(id, onBytes)
         val expected = setOfNotNull(e.sent.blake3.hex(), e.original.blake3.hex(), alsoAccept)
         if (hex !in expected) return Outcome.NotCopied(NotCopiedReason.FAILED, "changed on the new phone during the transfer")
         val dateNotes = mutableListOf<String>()
@@ -379,5 +425,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
 
     companion object {
         const val SPEED_BYTES = 32 shl 20
+        /** The largest file requested before its turn: it waits in memory until then. */
+        const val LOOKAHEAD_MAX = 16L shl 20
     }
 }

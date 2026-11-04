@@ -53,6 +53,7 @@ class Connection(private val ctl: Controller) {
     }
 
     private fun tryAttach() {
+        ctl.testTcp?.let { return tcpAttach(it) }
         val um = ctl.usbManager
         if (isHost) {
             val dev = um.deviceList.values.firstOrNull() ?: run {
@@ -95,6 +96,24 @@ class Connection(private val ctl: Controller) {
             guidance = "Opening the link…"
             link.attach(Usb.openAccessoryPipe(um, acc))
             log("accessory pipe open: $acc")
+        }
+    }
+
+    /** Test builds: the same link over TCP between emulators. */
+    private fun tcpAttach(spec: String) {
+        if (isHost) {
+            val port = spec.substringAfter("listen:").toInt()
+            guidance = "TEST: waiting for the old phone on TCP port $port…"
+            val pipe = TestTransport.accept(port, 1000) ?: return
+            log("tcp: accepted on $port")
+            link.attach(pipe)
+        } else {
+            val host = spec.substringBeforeLast(':')
+            val port = spec.substringAfterLast(':').toInt()
+            guidance = "TEST: connecting to the new phone at $spec…"
+            val pipe = runCatching { TestTransport.connect(host, port) }.getOrElse { return }
+            log("tcp: connected to $spec")
+            link.attach(pipe)
         }
     }
 

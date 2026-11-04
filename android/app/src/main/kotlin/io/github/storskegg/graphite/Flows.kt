@@ -47,6 +47,12 @@ class Flows(private val ctl: Controller) {
         }
         ctl.requireAuth("connects to the other phone over the cable")
         val conn = Connection(ctl)
+        // Whatever ends the session, its link goes: the next session opens its own.
+        try { session(conn) } finally { conn.close("session over") }
+    }
+
+    private fun session(conn: Connection) {
+        val role = role!!
         while (true) {
             conn.awaitUp({ ctl.show(Screen("Connecting", it, progress = io.github.storskegg.graphite.ui.Progress(0, 0, ""))) }) { dev ->
                 CableSetup(ctl, conn).offer(dev)
@@ -55,7 +61,7 @@ class Flows(private val ctl: Controller) {
                 val both = if (role == AppRole.TARGET) "new phones (GrapheneOS)" else "old phones (not GrapheneOS)"
                 conn.close("both phones are $both")
                 ctl.ask(Screen("Both phones are $both",
-                    "graphite copies from an old phone to a new GrapheneOS phone. Connect one of each."))
+                    "graphite copies from an old phone to a new GrapheneOS phone. Connect one of each.", buttons = listOf("Start again")))
                 return
             }
             TransferService.start(ctl.app, "Connected to the other phone")
@@ -70,7 +76,7 @@ class Flows(private val ctl: Controller) {
                 ctl.show(Screen("The other phone started over", "Pairing again…"))
             } catch (e: PeerAbortException) {
                 conn.close("aborted")
-                ctl.ask(Screen("Stopped", e.message ?: ""))
+                ctl.ask(Screen("Stopped", e.message ?: "", buttons = listOf("Done")))
                 return
             }
         }
@@ -111,9 +117,8 @@ class Flows(private val ctl: Controller) {
             link.sendAbort("the six digits did not match on the ${if (ctl.isTarget) "new" else "old"} phone")
             link.flush(2000)
             conn.close("codes differ")
-            ctl.ask(Screen("Pairing stopped", "The codes did not match, so nothing was sent. Check the cable " +
-                "(no hubs or adapters you don't trust) and start again."))
-            throw StoppedException()
+            throw StoppedException("The codes did not match, so nothing was sent. Check the cable " +
+                "(no hubs or adapters you don't trust) and start again.")
         }
         ctl.requireAuth("finishes pairing")
         confirmCode()
@@ -131,8 +136,8 @@ class Flows(private val ctl: Controller) {
                 "Paired with ${peer.name}. Accept it as the phone to copy from? Nothing has been copied yet.",
                 buttons = listOf("Accept", "Refuse")))
             if (a2.button != "Accept") {
-                channel.send(Msg.ERROR, BinWriter().str("the new phone refused this phone").finish())
-                throw StoppedException()
+                channel.stop(Msg.ERROR, BinWriter().str("the new phone refused this phone").finish())
+                throw StoppedException("You refused the old phone, so nothing was copied.")
             }
             channel.send(Msg.ACCEPTED, ByteArray(0))
         } else {

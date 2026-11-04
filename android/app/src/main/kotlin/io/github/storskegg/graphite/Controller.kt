@@ -23,7 +23,7 @@ const val TAG = "graphite"
 fun log(s: String) { Log.i(TAG, s) }
 
 /** Thrown into the flow thread when the user stops the session. */
-class StoppedException : Exception("stopped")
+class StoppedException(val why: String = "") : Exception("stopped")
 
 /**
  * The app's state for the life of the process: the user-authentication gate,
@@ -33,7 +33,14 @@ class StoppedException : Exception("stopped")
  */
 class Controller(val app: Context) {
     val gate = AuthGate(app)
-    val role: RoleResult = UnattestedRoleCheck.check(app)
+    private val checkedRole: RoleResult = UnattestedRoleCheck.check(app)
+
+    /** This phone's role; test builds can force it with `test_role` (for the emulator harness). */
+    val role: RoleResult get() = when (if (debuggable) prefs.getString("test_role", null) else null) {
+        "target" -> RoleResult(AppRole.TARGET, false, "TEST: forced to be the new phone (test_role).")
+        "source" -> RoleResult(AppRole.SOURCE, false, "TEST: forced to be the old phone (test_role).")
+        else -> checkedRole
+    }
     val usbManager: UsbManager = app.getSystemService(UsbManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     // Declared before init, which reads it through updateStatus().
@@ -61,12 +68,14 @@ class Controller(val app: Context) {
     private fun changed() = main.post { synchronized(listeners) { listeners.toList() }.forEach { it() } }
 
     fun updateStatus(usb: String? = null) {
+        val was = status
         status = Status(
             role = role.explanation + (testScope?.let { "\nTEST SCOPE: only folders named \"$it\"." } ?: ""),
             usb = usb ?: status.usb,
             auth = if (gate.isValid()) "You confirmed it's you." else "Not confirmed: graphite will ask before pairing or touching files.",
         )
-        changed()
+        // The USB keeper calls this twice a second; redraw only on a change.
+        if (status != was) changed()
     }
 
     /** Shows a screen without waiting for an answer. */
@@ -121,6 +130,19 @@ class Controller(val app: Context) {
         get() = if (debuggable) prefs.getString("test_scope", null)?.ifEmpty { null } else null
         set(v) { prefs.edit().putString("test_scope", v).apply(); updateStatus() }
 
+    /** Test builds only: "target" or "source", overriding the role check (emulators). */
+    var testRole: String?
+        get() = if (debuggable) prefs.getString("test_role", null)?.ifEmpty { null } else null
+        set(v) { prefs.edit().putString("test_role", v).apply() }
+
+    /**
+     * Test builds only: the link over TCP instead of USB. The target listens on
+     * "listen:PORT", the source connects to "HOST:PORT" (see emulator-test.sh).
+     */
+    var testTcp: String?
+        get() = if (debuggable && io.github.storskegg.graphite.usb.TestTransport.AVAILABLE) prefs.getString("test_tcp", null)?.ifEmpty { null } else null
+        set(v) { prefs.edit().putString("test_tcp", v).apply() }
+
     /** Test builds only: the target's free space as preflight sees it, to test the space check. */
     var testFreeBytes: Long?
         get() = if (debuggable) prefs.getString("test_free_bytes", null)?.toLongOrNull() else null
@@ -133,15 +155,23 @@ class Controller(val app: Context) {
     fun start() {
         if (worker?.isAlive == true) return
         worker = Thread({
-            try {
-                Flows(this).run()
-            } catch (_: StoppedException) {
-                log("stopped")
-            } catch (t: Throwable) {
-                Log.e(TAG, "flow failed", t)
-                show(Screen("Something went wrong", t.message ?: t.toString(), buttons = listOf()))
-            } finally {
-                TransferService.stop(app)
+            // A session that ends with Done starts the next one: back to the start, ready to pair again.
+            Sessions.loop {
+                try {
+                    Flows(this).run()
+                    true
+                } catch (e: StoppedException) {
+                    log("stopped: ${e.why}")
+                    // A stop ends this session, not graphite: it waits to start again.
+                    ask(Screen("Stopped", e.why, buttons = listOf("Start again")))
+                    true
+                } catch (t: Throwable) {
+                    Log.e(TAG, "flow failed", t)
+                    ask(Screen("Something went wrong", t.message ?: t.toString(), buttons = listOf("Start again")))
+                    true
+                } finally {
+                    TransferService.stop(app)
+                }
             }
         }, "graphite-flow").apply { start() }
     }

@@ -45,12 +45,12 @@ data class Options(val metadata: MetadataChoice, val androidMedia: Boolean) {
     }
 }
 
-/** Either way: progress to show on the other phone. */
-data class ProgressMsg(val text: String, val done: Long, val total: Long) {
-    fun encode() = BinWriter().str(text).i64(done).i64(total).finish()
+/** Either way: progress to show on the other phone; [label] goes under the bar (bytes, rate, time left). */
+data class ProgressMsg(val text: String, val done: Long, val total: Long, val label: String = "") {
+    fun encode() = BinWriter().str(text).i64(done).i64(total).str(label).finish()
 
     companion object {
-        fun decode(b: ByteArray) = BinReader(b).run { ProgressMsg(str(), i64(), i64()) }
+        fun decode(b: ByteArray) = BinReader(b).run { ProgressMsg(str(), i64(), i64(), if (more()) str() else "") }
     }
 }
 

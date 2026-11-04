@@ -51,6 +51,12 @@ class Channel(private val link: Link, private val cipher: ChunkCipher, private v
     /** Waits until the other phone has acknowledged everything sent. */
     fun flush(timeoutMs: Long) = link.flush(timeoutMs)
 
+    /** Tells the other phone why this one stops ([type] is the app's error message) and waits until it has it. */
+    fun stop(type: Int, why: ByteArray) {
+        send(type, why)
+        flush(3000)
+    }
+
     fun send(type: Int, body: ByteArray, last: Boolean = false) {
         val header = ByteBuffer.allocate(5).order(ByteOrder.LITTLE_ENDIAN).put(type.toByte()).putInt(body.size).array()
         var off = 0
