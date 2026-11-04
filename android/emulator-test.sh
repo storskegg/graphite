@@ -24,6 +24,9 @@ SDK=${ANDROID_HOME:-${ANDROID_SDK_ROOT:?set ANDROID_HOME}}
 ADB="$SDK/platform-tools/adb"; [ -x "$ADB" ] || ADB=adb
 EMULATOR="$SDK/emulator/emulator"
 AVDMANAGER=$(command -v avdmanager || echo "$SDK/cmdline-tools/latest/bin/avdmanager")
+# avdmanager and the emulator both use this; some installs default elsewhere (~/.config/.android).
+export ANDROID_AVD_HOME=${ANDROID_AVD_HOME:-$HOME/.android/avd}
+mkdir -p "$ANDROID_AVD_HOME"
 PKG=io.github.storskegg.graphite
 PIN=1234
 PORT=7710
@@ -52,7 +55,7 @@ avd() {  # avd NAME IMAGE
         echo no | "$AVDMANAGER" create avd -n "$1" -k "$2" -d pixel_6 >/dev/null
     fi
     # The default 2 GB hangs and crashes recent images while booting.
-    sed -i.bak 's/^hw.ramSize=.*/hw.ramSize=4096/' "$HOME/.android/avd/$1.avd/config.ini"
+    sed -i.bak 's/^hw.ramSize=.*/hw.ramSize=4096/' "$ANDROID_AVD_HOME/$1.avd/config.ini"
 }
 
 boot() {  # boot SERIAL AVD [EMULATOR FLAG...]
