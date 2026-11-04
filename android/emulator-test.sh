@@ -78,6 +78,11 @@ boot() {  # boot SERIAL AVD [EMULATOR FLAG...]
         fi
         sleep 2
     done
+    # On slow hosts boot_completed comes before every system service is up.
+    until [ "$(sh_ "$1" "service check package; service check appops; service check media.extractor" 2>/dev/null | grep -c ': found')" = 3 ]; do
+        [ "$(date +%s)" -gt "$end" ] && { echo "FAIL: emulator $2: system services never came up" >&2; exit 1; }
+        sleep 2
+    done
     sh_ "$1" "svc power stayon true; settings put system screen_off_timeout 1800000; input keyevent 82" >/dev/null
     # uiautomator can't dump a screen that never goes idle (a spinning progress bar).
     sh_ "$1" "settings put global animator_duration_scale 0; settings put global transition_animation_scale 0; settings put global window_animation_scale 0"
