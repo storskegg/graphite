@@ -54,8 +54,11 @@ avd() {  # avd NAME IMAGE
     if ! "$EMULATOR" -list-avds | grep -qx "$1"; then
         echo no | "$AVDMANAGER" create avd -n "$1" -k "$2" -d pixel_6 >/dev/null
     fi
-    # The default 2 GB hangs and crashes recent images while booting.
-    sed -i.bak 's/^hw.ramSize=.*/hw.ramSize=4096/' "$ANDROID_AVD_HOME/$1.avd/config.ini"
+    # The default 2 GB of RAM hangs and crashes recent images while booting; some installs
+    # default to a data partition too small to install the APK.
+    local cfg="$ANDROID_AVD_HOME/$1.avd/config.ini"
+    sed -i.bak -e 's/^hw.ramSize=.*/hw.ramSize=4096/' -e '/^disk.dataPartition.size=/d' "$cfg"
+    echo "disk.dataPartition.size=6G" >>"$cfg"
 }
 
 boot() {  # boot SERIAL AVD [EMULATOR FLAG...]
