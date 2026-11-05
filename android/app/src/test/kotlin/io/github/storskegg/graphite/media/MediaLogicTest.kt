@@ -236,7 +236,7 @@ class ReceiptsTest {
         PlanStatus.UNTICKED, PlanStatus.TO_COPY, PlanStatus.TO_COPY)
 
     @Test fun everyEntryGetsTheStatusThePlanAndOutcomesGive() {
-        val r = Receipts.build(entries, plan,
+        val r = Receipts.build(entries.map { it.path }, plan,
             outcomes = mapOf(0 to Outcome.Verified(), 2 to Outcome.Verified(Comparison.WITH_METADATA),
                 5 to Outcome.NotCopied(NotCopiedReason.CHANGED_ON_SOURCE)),
             primaryOf = mapOf(0 to 0, 1 to 0, 5 to 5, 6 to 6),
@@ -245,7 +245,7 @@ class ReceiptsTest {
         assertEquals(ReceiptStatus.CopiedVerified, r[0].status)
         assertEquals("date taken 1, not 2", r[0].note)
         assertEquals(ReceiptStatus.CopiedVerified, r[1].status)
-        assertEquals("same bytes as DCIM/a.jpg, copied once", r[1].note)
+        assertEquals("same as DCIM/a.jpg, copied once", r[1].note)
         assertEquals(ReceiptStatus.PresentVerified, r[2].status)
         assertEquals(Comparison.WITH_METADATA, r[2].note)
         assertEquals(ReceiptStatus.PresentInTrash, r[3].status)
@@ -255,21 +255,21 @@ class ReceiptsTest {
     }
 
     @Test fun aDuplicateSharesItsPrimarysFailure() {
-        val r = Receipts.build(entries, plan, mapOf(0 to Outcome.NotCopied(NotCopiedReason.FAILED, "hash did not match")),
+        val r = Receipts.build(entries.map { it.path }, plan, mapOf(0 to Outcome.NotCopied(NotCopiedReason.FAILED, "hash did not match")),
             primaryOf = mapOf(0 to 0, 1 to 0))
         assertEquals(ReceiptStatus.NotCopied(NotCopiedReason.FAILED), r[1].status)
-        assertEquals("hash did not match; same bytes as DCIM/a.jpg, copied once", r[1].note)
+        assertEquals("hash did not match; same as DCIM/a.jpg, copied once", r[1].note)
     }
 
     @Test fun onlyThePlansUntickedEntriesAreNotCopiedAsUnticked() {
         // The core's rule: unticked in the receipt exactly when unticked in the plan.
-        val r = Receipts.build(entries, plan, emptyMap(), emptyMap())
+        val r = Receipts.build(entries.map { it.path }, plan, emptyMap(), emptyMap())
         val unticked = r.filter { it.status == ReceiptStatus.NotCopied(NotCopiedReason.UNTICKED) }.map { it.index.toInt() }
         assertEquals(plan.indices.filter { plan[it] == PlanStatus.UNTICKED }, unticked)
     }
 
     @Test fun summaryCounts() {
-        val r = Receipts.build(entries, plan, mapOf(0 to Outcome.Verified(), 2 to Outcome.Verified()), mapOf(0 to 0, 1 to 0))
+        val r = Receipts.build(entries.map { it.path }, plan, mapOf(0 to Outcome.Verified(), 2 to Outcome.Verified()), mapOf(0 to 0, 1 to 0))
         val s = Receipts.summary(r)
         assertEquals(2, s.copied)
         assertEquals(1, s.present)

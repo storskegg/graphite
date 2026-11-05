@@ -15,6 +15,9 @@ import io.github.storskegg.graphite.ffi.manifestHash
 import io.github.storskegg.graphite.ffi.planHash
 import io.github.storskegg.graphite.ffi.planTotals
 import io.github.storskegg.graphite.log
+import io.github.storskegg.graphite.records.Category
+import io.github.storskegg.graphite.records.Entries
+import io.github.storskegg.graphite.records.TargetRecords
 import io.github.storskegg.graphite.session.FileEnd
 import io.github.storskegg.graphite.session.Msg
 import io.github.storskegg.graphite.ui.Choice
@@ -62,41 +65,48 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             store.hash(f)
         }
 
+        // Messages, calls, contacts and blocked numbers (docs/records.md); this may take the SMS role until they are copied.
+        val statuses = (compared.map { it.status } + manifest.records.map { PlanStatus.TO_COPY }).toMutableList()
+        val records = TargetRecords(ctl, ch, manifest)
+        records.compare(statuses)
+
         // 3. Preflight and the plan.
-        val statuses = compared.map { it.status }.toMutableList()
-        val planned = preflight(manifest, statuses, mm, inv) ?: return
+        val planned = try { preflight(manifest, statuses, mm, inv) } catch (x: Exception) { records.release(); throw x }
+            ?: run { records.release(); return }
         val (plan, signedPlan) = planned
         ch.send(Msg.PLAN, signedPlan)
         val answer = Verdict.decode(Flows.expect(ch, Msg.PLAN_ANSWER).body)
-        if (!answer.ok) throw IOException("the old phone rejected the plan: ${answer.why}")
-        val toCopy = statuses.indices.filter { statuses[it] == PlanStatus.TO_COPY }
+        if (!answer.ok) { records.release(); throw IOException("the old phone rejected the plan: ${answer.why}") }
         val start = ctl.ask(Screen("Ready to copy", summary(plan, inv) + "\n\nThe old phone shows the same summary.",
             buttons = listOf("Start copy", "Cancel")))
         if (start.button != "Start copy") {
+            records.release()
             ch.stop(Msg.ERROR, BinWriter().str("the copy was cancelled on the new phone").finish())
             throw StoppedException("The copy was cancelled; nothing was copied.")
         }
         ctl.requireAuth("writes files")
         ch.send(Msg.START, ByteArray(0))
 
-        // 4. Copy, one file per sent hash, in DATE_ADDED order.
-        val primaries = Comparison.primaries(entries, toCopy)
-        val primaryOf = toCopy.associateWith { primaries.getValue(entries[it].sent.blake3.hex()) }
-        val order = primaries.values.sortedWith(compareBy({ entries[it].dateAddedMs ?: Long.MAX_VALUE }, { it }))
+        // 4. Records first (the SMS role goes back as soon as they are in), then one file per sent hash, in DATE_ADDED order.
+        val primaryOf = Entries.primaries(manifest, statuses)
+        val order = primaryOf.filterKeys { it < entries.size }.values.distinct()
+            .sortedWith(compareBy({ entries[it].dateAddedMs ?: Long.MAX_VALUE }, { it }))
         val outcomes = HashMap<Int, Outcome>()
         val copiedIds = HashMap<Int, Long>()
-        val tiles = TileMap(entries.map { it.path }, entries.map { it.sent.size.toLong() }, TileMap.initial(statuses), primaryOf)
+        val notes = HashMap<Int, String>()
+        val names = Entries.names(manifest)
+        val tiles = TileMap(names, Entries.sizes(manifest), TileMap.initial(statuses), primaryOf)
+        records.copyAndVerify(statuses, primaryOf, outcomes, notes, tiles)
         copy(entries, order, outcomes, copiedIds, tiles)
         log("tiles after the copy: ${tiles.snapshot().summary()}")
         ch.send(Msg.COPY_DONE, ByteArray(0))
 
         // 5. Verification, without the cache, with progress here and on the old phone.
-        val notes = HashMap<Int, String>()
         val present = compared.indices.filter { statuses[it] == PlanStatus.PRESENT }
         val toVerify = copiedIds.keys.size + present.size
         val verifyBytes = copiedIds.keys.sumOf { entries[it].sent.size.toLong() } + present.sumOf { entries[it].sent.size.toLong() }
         // Back to waiting, then blue as each file reads back right.
-        tiles.reset(setOf(Tile.DONE, Tile.PRESENT), Tile.PENDING)
+        tiles.reset(setOf(Tile.DONE, Tile.PRESENT), Tile.PENDING, entries.indices)
         val meter = Meter(ctl, "Verifying", verifyBytes, toVerify, tiles) { ch.send(Msg.PROGRESS, it.encode()) }
         var verified = 0L
         var n = 0
@@ -121,7 +131,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             }
         }
         if (toVerify > 0) meter.update(verifyBytes, toVerify, "done", force = true)
-        val receiptEntries = Receipts.build(entries, statuses, outcomes, primaryOf, notes)
+        val receiptEntries = Receipts.build(names, statuses, outcomes, primaryOf, notes)
         val receipt = Receipt(manifestHash(mm.signed), planHash(signedPlan), receiptEntries)
         tiles.applyReceipt(receiptEntries)
         log("tiles after verification: ${tiles.snapshot().summary()}")
@@ -168,8 +178,9 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             Choice("all", "Remove all but what display needs",
                 "Also removes dates and exposure settings. Galleries then sort these by the file's modification " +
                     "time, which is still copied.", group = "m"),
-        ) + if (inv.androidMedia.count > 0) listOf(Choice("am", "Also copy Android/media",
-            "${inv.androidMedia.of("files")}: media saved by apps such as messengers. Off unless you tick it.")) else emptyList()
+        ) + (if (inv.androidMedia.count > 0) listOf(Choice("am", "Also copy Android/media",
+            "${inv.androidMedia.of("files")}: media saved by apps such as messengers. Off unless you tick it.")) else emptyList()) +
+            recordChoices(inv)
         var note = ""
         while (true) {
             val a = ctl.ask(Screen("What to copy",
@@ -186,8 +197,23 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
                 "all" in a.checked -> MetadataChoice.REMOVE_ALL_BUT_DISPLAY
                 else -> { note = "\n\nChoose what to do with metadata first."; continue }
             }
-            return Options(m, "am" in a.checked)
+            return Options(m, "am" in a.checked, Category.entries.filter { "r_${it.name}" in a.checked }.toSet())
         }
+    }
+
+    /** Messages, calls, contacts and blocked numbers, ticked where the old phone has any. */
+    private fun recordChoices(inv: Inventory): List<Choice> = Category.entries.mapNotNull { c ->
+        val n = inv.records.of(c)
+        if (n == 0L) return@mapNotNull null
+        val count = if (n < 0) "" else " (%,d)".format(n)
+        Choice("r_${c.name}", c.label + count, when (c) {
+            Category.MESSAGES -> "SMS and MMS. graphite becomes this phone's SMS app for a few minutes to write them, then you switch back."
+            Category.CALLS -> "The call history, with dates and durations."
+            Category.CONTACTS -> "Every contact on the old phone, including ones from accounts such as Google. They are stored " +
+                "on this phone and no longer sync with the account."
+            Category.BLOCKED -> "The old phone asks to make graphite its SMS app for a moment to read them, and this phone " +
+                "while it writes them."
+        }, checked = true)
     }
 
     private fun waitForManifest(): ManifestMsg {
@@ -208,6 +234,8 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
     /** Space, battery, names and the open questions; returns the signed plan, or null if the user stopped. */
     private fun preflight(manifest: Manifest, statuses: MutableList<PlanStatus>, mm: ManifestMsg, inv: Inventory): Pair<Plan, ByteArray>? {
         val entries = manifest.files
+        val names = Entries.names(manifest)
+        val sizes = Entries.sizes(manifest)
         // Files whose metadata can't be removed: one question per kind.
         for ((kind, items) in mm.unremovable.entries.filter { statuses[it.key] == PlanStatus.TO_COPY }.groupBy { it.value.first }) {
             val a = ctl.ask(Screen("Metadata can't be removed",
@@ -217,13 +245,13 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
                 buttons = listOf("Skip them", "Copy as they are")))
             if (a.button == "Skip them") for (it in items) statuses[it.key] = PlanStatus.UNTICKED
         }
-        // What the user can tick or untick by folder: everything to copy now, before any unticking.
-        val offered = entries.indices.filter { statuses[it] == PlanStatus.TO_COPY }
-        val folders = offered.map { Preflight.folder(entries[it].path) }.distinct().sorted()
+        // What the user can tick or untick by folder (records by kind): everything to copy now, before any unticking.
+        val offered = statuses.indices.filter { statuses[it] == PlanStatus.TO_COPY }
+        val folders = offered.map { Preflight.folder(names[it]) }.distinct().sorted()
         fun apply(ticked: Set<String>) {
-            for (i in offered) statuses[i] = if (Preflight.folder(entries[i].path) in ticked) PlanStatus.TO_COPY else PlanStatus.UNTICKED
+            for (i in offered) statuses[i] = if (Preflight.folder(names[i]) in ticked) PlanStatus.TO_COPY else PlanStatus.UNTICKED
         }
-        fun ticked() = offered.filter { statuses[it] == PlanStatus.TO_COPY }.map { Preflight.folder(entries[it].path) }.toSet()
+        fun ticked() = offered.filter { statuses[it] == PlanStatus.TO_COPY }.map { Preflight.folder(names[it]) }.toSet()
         val renamed = entries.indices.filter { statuses[it] == PlanStatus.TO_COPY && Preflight.targetPath(entries[it].path) != entries[it].path }
         while (true) {
             val totals = planTotals(manifest, planEntries(statuses))
@@ -231,7 +259,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             val allocatable = ctl.testFreeBytes ?: Flows.allocatableBytes(ctl.app)
             if (!Preflight.fits(bytes, allocatable)) {
                 val byFolder = sortedMapOf<String, Long>()
-                for (i in offered) byFolder.merge(Preflight.folder(entries[i].path), entries[i].sent.size.toLong(), Long::plus)
+                for (i in offered) byFolder.merge(Preflight.folder(names[i]), sizes[i], Long::plus)
                 val now = ticked()
                 val a = ctl.ask(Screen("Not enough space on this phone",
                     "${formatBytes(bytes)} to copy, but only ${formatBytes(allocatable - Preflight.SPARE)} can be used " +

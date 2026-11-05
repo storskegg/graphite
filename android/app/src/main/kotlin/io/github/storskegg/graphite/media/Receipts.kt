@@ -1,6 +1,5 @@
 package io.github.storskegg.graphite.media
 
-import io.github.storskegg.graphite.ffi.ManifestEntry
 import io.github.storskegg.graphite.ffi.NotCopiedReason
 import io.github.storskegg.graphite.ffi.PlanStatus
 import io.github.storskegg.graphite.ffi.ReceiptEntry
@@ -18,10 +17,10 @@ object Receipts {
      * [outcomes] holds every entry that was copied or verified as present.
      * [primaryOf] maps an entry *to copy* to the entry that carried its bytes
      * (itself for the one copied). [notes] adds to an entry's note (dates,
-     * metadata kept).
+     * metadata kept). [names] are the entries' paths and record labels.
      */
     fun build(
-        entries: List<ManifestEntry>,
+        names: List<String>,
         plan: List<PlanStatus>,
         outcomes: Map<Int, Outcome>,
         primaryOf: Map<Int, Int>,
@@ -38,7 +37,7 @@ object Receipts {
             }
             PlanStatus.TO_COPY -> {
                 val p = primaryOf[i] ?: i
-                val via = if (p != i) "same bytes as ${entries[p].path}, copied once" else ""
+                val via = if (p != i) "same as ${names[p]}, copied once" else ""
                 when (val o = outcomes[p]) {
                     is Outcome.Verified -> ReceiptStatus.CopiedVerified to note(o.note, via)
                     is Outcome.NotCopied -> ReceiptStatus.NotCopied(o.reason) to note(o.note, via)

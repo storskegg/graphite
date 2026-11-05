@@ -56,6 +56,12 @@ releases yet.
   fields; the SMS role window; attestation ([docs/records.md](docs/records.md)).
 - `core/`, `core-ffi/`: record entries in the manifest, numbered after the
   files in plans and receipts, and `record_identity`.
+- `android/`: step 2. SMS, MMS (with their pictures), the call log, contacts
+  and blocked numbers are copied before the files and verified by reading them
+  back; a second run copies nothing. graphite holds the SMS role only while it
+  needs it and asks you to give it back to your messaging app.
+- `android/emulator-test.sh`: `records` and `records_again` with synthetic test
+  records.
 
 ### Fixed
 

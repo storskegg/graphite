@@ -1,6 +1,8 @@
 package io.github.storskegg.graphite.media
 
 import io.github.storskegg.graphite.ffi.MetadataChoice
+import io.github.storskegg.graphite.records.Category
+import io.github.storskegg.graphite.records.RecordCounts
 import io.github.storskegg.graphite.util.BinReader
 import io.github.storskegg.graphite.util.BinWriter
 import io.github.storskegg.graphite.util.formatBytes
@@ -22,26 +24,31 @@ data class Inventory(
     val androidMedia: Tally,
     /** Test builds only: the folder name the scope is limited to; empty otherwise. */
     val testScope: String,
+    /** Messages, calls, contacts and blocked numbers the source can read (docs/records.md). */
+    val records: RecordCounts = RecordCounts(),
 ) {
     fun encode(): ByteArray = BinWriter().apply {
         for (t in listOf(photos, videos, audio, other, androidMedia)) { i64(t.count); i64(t.bytes) }
         str(testScope)
+        for (c in Category.entries) i64(records.of(c))
     }.finish()
 
     companion object {
         fun decode(b: ByteArray) = BinReader(b).run {
             fun t() = Tally(i64(), i64())
-            Inventory(t(), t(), t(), t(), t(), str())
+            Inventory(t(), t(), t(), t(), t(), str(), if (more()) RecordCounts(i64(), i64(), i64(), i64()) else RecordCounts())
         }
     }
 }
 
 /** Target → source: the user's choices for this transfer. */
-data class Options(val metadata: MetadataChoice, val androidMedia: Boolean) {
-    fun encode() = BinWriter().u8(metadata.ordinal).bool(androidMedia).finish()
+data class Options(val metadata: MetadataChoice, val androidMedia: Boolean, val records: Set<Category> = emptySet()) {
+    fun encode() = BinWriter().u8(metadata.ordinal).bool(androidMedia).u8(Category.mask(records)).finish()
 
     companion object {
-        fun decode(b: ByteArray) = BinReader(b).run { Options(MetadataChoice.entries[u8()], bool()) }
+        fun decode(b: ByteArray) = BinReader(b).run {
+            Options(MetadataChoice.entries[u8()], bool(), if (more()) Category.of(u8()) else emptySet())
+        }
     }
 }
 

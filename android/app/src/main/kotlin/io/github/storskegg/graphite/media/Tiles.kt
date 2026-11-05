@@ -61,9 +61,9 @@ class TileMap(val paths: List<String>, val sizes: List<Long>, initial: List<Tile
         followers[i]?.forEach { states[it] = t.ordinal.toByte() }
     }
 
-    /** Every tile in [from] goes to [to] (copied files back to waiting, before verification). */
-    @Synchronized fun reset(from: Set<Tile>, to: Tile) {
-        for (i in 0 until n) if (this[i] in from) states[i] = to.ordinal.toByte()
+    /** Every tile in [from] among [range] goes to [to] (copied files back to waiting, before verification). */
+    @Synchronized fun reset(from: Set<Tile>, to: Tile, range: IntRange = 0 until n) {
+        for (i in range) if (this[i] in from) states[i] = to.ordinal.toByte()
     }
 
     /** The final state from the signed receipt, the same on both phones. */

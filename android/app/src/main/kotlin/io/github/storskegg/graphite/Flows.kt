@@ -45,6 +45,8 @@ class Flows(private val ctl: Controller) {
             ctl.ask(Screen("graphite can't run here", ctl.role.explanation))
             return
         }
+        // A crash while graphite held the SMS role: give it back before anything else.
+        io.github.storskegg.graphite.records.RoleWindow(ctl).let { if (it.leftOver()) it.giveBack() }
         ctl.requireAuth("connects to the other phone over the cable")
         val conn = Connection(ctl)
         // Whatever ends the session, its link goes: the next session opens its own.

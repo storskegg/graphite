@@ -10,6 +10,9 @@
 #   resume  - the socket is cut mid-copy; the link resumes and the copy verifies
 #   space   - preflight refuses when the target is (made to look) full
 #   battery - preflight refuses at 5 % and goes on after the battery recovers
+#   records - messages, calls, contacts and blocked numbers (synthetic, +1 555 010x and "GT …")
+#             copied with the media; graphite takes the SMS role on both phones and gives it back
+#   records_again - the same again: nothing copied, nothing duplicated; then the test records go
 #   removal - the source moves verified files to its trash
 #   speed   - not in the default run: SPEED_FILES small photos (default 400) and two 40 MB
 #             files, copied with "Keep all"; prints the time and where it went on each side
@@ -38,7 +41,8 @@ S=emulator-5582   # source: the "old phone", API 30
 FIX="$REPO/strip/tests/fixtures"
 LOG=$(mktemp -d)/graphite-emulator-test
 mkdir -p "$LOG"
-if [ $# -gt 0 ]; then SCENARIOS=("$@"); else SCENARIOS=(keep again strip display resume space battery removal); fi
+if [ $# -gt 0 ]; then SCENARIOS=("$@"); else SCENARIOS=(keep again strip display resume space battery records records_again removal); fi
+SMS_APP=com.google.android.apps.messaging   # both images' default SMS app
 
 say() { printf '\n== %s\n' "$*"; }
 fail() {
@@ -209,11 +213,71 @@ fresh_target() {  # forget everything the target has: its copies, journal and ha
     sh_ "$S" "am force-stop $PKG; am start -n $PKG/.MainActivity" >/dev/null
 }
 
+# --- records -------------------------------------------------------------------
+
+# sms_role SERIAL PKG: gives PKG the SMS role from the shell: the test's stand-in for the user
+# choosing an app in Android's dialog or in Messages' "Set default chat app" prompt.
+sms_role() { sh_ "$1" "cmd role add-role-holder android.app.role.SMS $2" >/dev/null; }
+
+# holder SERIAL: the SMS app (API 30's cmd role can't list holders: read dumpsys there).
+holder() {
+    local h; h=$(sh_ "$1" "cmd role get-role-holders android.app.role.SMS" 2>/dev/null | tr -d '\r')
+    case "$h" in ""|Unknown*) sh_ "$1" "dumpsys role" | tr -d '\r' | grep -A1 'name=android.app.role.SMS$' | sed -n 's/.*holders=//p' ;; *) echo "$h" ;; esac
+}
+
+# seed_records: graphite writes the synthetic records on the source while it holds the role.
+seed_records() {
+    sms_role "$S" "$PKG"; sh_ "$S" "logcat -c"
+    sh_ "$S" "am start -n $PKG/.MainActivity --es test_seed_records 1" >/dev/null
+    waitlog "$S" "test seed: wrote" 60; sms_role "$S" "$SMS_APP"
+}
+
+# clear_records: both phones delete their test records (and only those).
+clear_records() {
+    local d; for d in "$T" "$S"; do
+        sms_role "$d" "$PKG"; sh_ "$d" "logcat -c"
+        sh_ "$d" "am start -n $PKG/.MainActivity --es test_clear_records 1" >/dev/null
+        waitlog "$d" "test clear: deleted" 60; sms_role "$d" "$SMS_APP"
+    done
+}
+
+# count SERIAL URI WHERE: rows of a provider (as the shell sees them).
+count() { sh_ "$1" "content query --uri $2 --projection _id --where \"$3\"" | grep -c '^Row' || true; }
+
+# take_role SERIAL: graphite asks to be the SMS app; the user chooses graphite in Android's dialog.
+take_role() {
+    waitfor "$1" "graphite needs to be the SMS app" 600; tap "$1" "Continue"
+    trytap "$1" "graphite" 20 >/dev/null || true; tap "$1" "Set as default" 30
+}
+
+# give_back SERIAL: the user switches back to Messages, and graphite checks.
+give_back() { waitfor "$1" "Give the SMS role back" 600; sms_role "$1" "$SMS_APP"; tap "$1" "Check again"; }
+
 # --- one transfer --------------------------------------------------------------
 
-# transfer CHOICE [HOOK]: pairs, chooses, copies; HOOK runs once the copy starts.
+# transfer CHOICE [HOOK] [records]: pairs, chooses, copies; HOOK runs once the copy starts. With
+# "records" it also copies messages, calls, contacts and blocked numbers; otherwise blocked numbers
+# are unticked (the only record choice shown when the source has no test records).
 # Leaves the source on its "Copy verified" screen and prints the receipt line.
 transfer() {
+    pair_both
+    tap "$T" "$1"
+    if [ "${3:-}" = records ]; then
+        tap "$T" "Continue"; take_role "$S"; give_back "$S"; take_role "$T"
+    else
+        trytap "$T" "Blocked numbers" 5 >/dev/null || true; tap "$T" "Continue"
+    fi
+    if [ "${2:-}" = space ] || [ "${2:-}" = battery ]; then return 0; fi
+    tap "$T" "Continue" 600; tap "$T" "Start copy"
+    if [ "${3:-}" = records ]; then give_back "$T"; fi
+    if [ -n "${2:-}" ]; then "$2"; fi
+    waitfor "$T" "Copy finished" 1200
+    waitfor "$S" "Copy verified" 120
+    "$ADB" -s "$S" logcat -d | { grep -o 'receipt verified: .*' || true; } | tail -1 | sed 's/^receipt verified: //'
+}
+
+# pair_both: both phones start, pair with the six digits, and the new phone accepts the old one.
+pair_both() {
     # Keep each transfer's logs (in $LOG) before clearing them for this one.
     "$ADB" -s "$S" logcat -d -v time >>"$LOG/source.logcat"; "$ADB" -s "$T" logcat -d -v time >>"$LOG/target.logcat"
     sh_ "$S" "logcat -c"; sh_ "$T" "logcat -c"
@@ -227,13 +291,6 @@ transfer() {
     done
     [ -n "$ct" ] && [ "$ct" = "$cs" ] || fail "codes differ: '$ct' vs '$cs'"
     tap "$T" "They match"; tap "$S" "They match"; tap "$T" "Accept"
-    tap "$T" "$1"; tap "$T" "Continue"
-    if [ "${2:-}" = space ] || [ "${2:-}" = battery ]; then return 0; fi
-    tap "$T" "Continue" 600; tap "$T" "Start copy"
-    if [ -n "${2:-}" ]; then "$2"; fi
-    waitfor "$T" "Copy finished" 1200
-    waitfor "$S" "Copy verified" 120
-    "$ADB" -s "$S" logcat -d | { grep -o 'receipt verified: .*' || true; } | tail -1 | sed 's/^receipt verified: //'
 }
 
 # Both back to the start; the source asks once more before leaving its files (it always has some here).
@@ -321,6 +378,38 @@ battery() {
     waitfor "$T" "Copy finished" 600; done_both
 }
 
+# What the target holds of the test records: "sms mms calls contacts blocked".
+held_records() {
+    local test="LIKE '+1555010%'"
+    echo "$(count "$T" content://sms "address $test") $(count "$T" content://mms "_id > 0") \
+$(count "$T" content://call_log/calls "number $test") \
+$(count "$T" content://com.android.contacts/raw_contacts "display_name LIKE 'GT %' AND deleted = 0") \
+$(count "$T" content://com.android.blockednumber/blocked "original_number $test")"
+}
+
+# The files in the last manifest, from the new phone's log.
+files_in_manifest() { "$ADB" -s "$T" logcat -d | grep -o 'manifest: [0-9]* entries' | tail -1 | tr -dc '0-9'; }
+
+records() {
+    clear_records; seed_records; fresh_target
+    # 5 SMS (one saved twice), 1 MMS, 3 calls, 2 contacts, 2 blocked numbers; the SMS outside the test range stays.
+    local r media; r=$(transfer "Keep all metadata" "" records); media=$(files_in_manifest)
+    tiles $(( media + 13 )); done_both
+    expect "$r" "^$(( media + 13 )) copied and verified, 0 already"
+    local held; held=$(held_records); echo "  new phone holds (sms mms calls contacts blocked): $held"
+    [ "$held" = "4 1 3 2 2" ] || fail "the new phone's test records are not 4 1 3 2 2"
+    [ "$(count "$T" content://sms "body = 'not test data'")" = 0 ] || fail "a message outside the test range was copied"
+    [ "$(count "$T" content://mms/part "ct = 'image/png' AND _data IS NOT NULL")" = 1 ] || fail "the MMS picture did not arrive"
+    local h; for h in "$T" "$S"; do [ "$(holder "$h")" = "$SMS_APP" ] || fail "the SMS role is not back with Messages on $h"; done
+}
+
+records_again() {
+    local r media; r=$(transfer "Keep all metadata" "" records); media=$(files_in_manifest); done_both
+    expect "$r" "^0 copied and verified, $(( media + 13 )) already on the new phone"
+    [ "$(held_records)" = "4 1 3 2 2" ] || fail "a second run changed the new phone's records: $(held_records)"
+    clear_records
+}
+
 removal() {
     transfer "Keep all metadata" >/dev/null
     tap "$S" "Remove from this phone"
@@ -380,6 +469,7 @@ main() {
     prepare "$T" target "listen:$PORT"
     prepare "$S" source "10.0.2.2:$PORT"
     sh_ "$S" "rm -rf /sdcard/*/graphite-test"; seed
+    clear_records   # the media scenarios run without test records; "records" seeds its own
 
     for sc in "${SCENARIOS[@]}"; do say "$sc"; "$sc"; echo "  PASS"; done
 

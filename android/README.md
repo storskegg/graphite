@@ -3,8 +3,9 @@
 One APK for both phones. On a GrapheneOS phone it is the **target** (the new
 phone); on any other Android 11+ phone it is the **source** (the old phone).
 The two phones talk over a USB-C cable only: Android Open Accessory, with the
-target as USB host. This iteration copies **media**: photos, videos, audio,
-downloads and documents ([docs/media.md](../docs/media.md)).
+target as USB host. It copies **media**: photos, videos, audio, downloads and
+documents ([docs/media.md](../docs/media.md)); and **messages, calls, contacts and
+blocked numbers** ([docs/records.md](../docs/records.md)).
 
 ## Build
 
@@ -47,11 +48,16 @@ old phone over the cable (needs USB debugging on the old phone, see below).
 4. Both phones show six digits; compare them and confirm on both. Accept the
    old phone on the new one.
 5. On the new phone, choose what to do with metadata (nothing is preselected),
-   and whether to include `Android/media/`.
-6. The old phone lists and hashes its files; the new phone works out what it
-   already has, checks space, battery and names, and shows the plan. Untick
-   folders if you like, continue, and start the copy.
-7. The new phone verifies everything and signs a receipt; the old phone checks
+   whether to include `Android/media/`, and which of messages, the call log,
+   contacts and blocked numbers to copy (ticked where the old phone has any).
+6. The old phone lists and hashes its files and records. For blocked numbers it
+   asks to be the SMS app for a moment, then you switch back. The new phone
+   works out what it already has (for messages and blocked numbers it asks to
+   be the SMS app first), checks space, battery and names, and shows the plan.
+   Untick folders or kinds if you like, continue, and start the copy.
+7. Records are copied and verified first; then the new phone opens your SMS
+   app so you can switch back to it ("Set default chat app"). Then the files.
+8. The new phone verifies everything and signs a receipt; the old phone checks
    it. Then, only if you ask, the old phone moves verified files to its trash.
 
 While copying and verifying, both phones show a treemap above the progress:
@@ -88,6 +94,12 @@ they ignore the other test extras:
 | `test_role target` or `source` | Forces the role (an emulator is never GrapheneOS) |
 | `test_tcp listen:PORT` or `HOST:PORT` | Links over a TCP socket instead of USB (`usb/TestTransport.kt`, in the debug source set only; release builds have a stub and no network permission) |
 | `test_free_bytes N` | Pretends the new phone has N bytes free (`x` clears it) |
+| `test_seed_records 1` | Writes the synthetic test records (+1 555 010x numbers, "GT …" contacts); messages and blocked numbers only while graphite holds the SMS role |
+| `test_clear_records 1` | Deletes this phone's test records, and only those (the same role rule) |
+| `test_sms_role take` or `give:PKG` | Asks for the SMS role, or offers it to PKG (Android removes that intent: kept to show it) |
+
+With a test scope, the old phone also reads only test records: numbers starting
+`+1555010` and contacts named "GT …".
 
 ## Layout
 
@@ -96,7 +108,8 @@ they ignore the other test extras:
 | `link/` | Frames (magic, CRCs, resync) and the reliable, resumable link over a byte pipe |
 | `usb/` | USB role, AOA switch, host and accessory pipes, the connection keeper, setup over the cable (adb client) |
 | `auth/` | The user-presence gate: an auth-bound Keystore key signs a nonce |
-| `role/` | Target or source (unattested check, with the attestation seam) |
+| `role/` | Target or source; the SMS role |
+| `records/` | Messages, calls, contacts and blocked numbers: provider rows, payloads, identities, both sides, the SMS-role window, test data |
 | `session/` | Encrypted channel on top of the link, message types |
 | `media/` | Source library, target store and hash cache, comparison, preflight, journal, receipts, both flows |
 | `Flows.kt` | Pairing and the session from first screen to last |
@@ -126,13 +139,15 @@ JVM unit tests (`app/src/test/`): frames and the link (handshake discarding
 leftovers, windowing, lost and resent records, resume after EIO, a restarted
 peer), comparison (including the no-duplicates rule both ways), preflight
 maths, the journal, receipt mapping, the wire messages, progress and timing,
-the cable setup's version check and the session loop. `core-ffi` has Rust tests
+the cable setup's version check and the session loop; record payloads and
+identities (number formats, MMS parts in any order, joined contacts), the test
+scope, and the wire messages' record fields. `core-ffi` has Rust tests
 for the wrapper and the stripped-file reader (`cargo test` in `core-ffi/`).
 
 ### Emulator test
 
 ```bash
-android/emulator-test.sh            # keep again strip display resume space battery removal
+android/emulator-test.sh            # keep again strip display resume space battery records records_again removal
 android/emulator-test.sh speed      # timing only: 400 small photos and 80 MB
 ```
 
@@ -155,6 +170,8 @@ receipts and MediaStore rows:
 | resume | The source's connection is reset mid-copy (iptables on the rooted source); the link resumes and the copy verifies |
 | space | Refused when the target looks full (`test_free_bytes`); the source shows why |
 | battery | Refused at 5 %, goes on after the battery is back and "Check again" |
+| records | Synthetic records seeded on the source by graphite itself (5 SMS, one saved twice; an MMS with a picture; 3 calls; 2 contacts; 2 blocked numbers; and an SMS outside the test range): all copied with the media, the duplicate once, the outside one not at all; the target holds 4 SMS, 1 MMS with its picture, 3 calls, 2 contacts and 2 blocked numbers; both phones took the SMS role through Android's dialog and gave it back (the test gives it back with `cmd role`, standing in for Messages' prompt) |
+| records_again | A second run copies nothing and leaves the same records; then both phones delete their test records |
 | removal | The source moves the verified files to its trash (it taps Android's own dialog, test-only) |
 
 Real phones stay the test for AOA, the USB role, the cable install and
@@ -171,8 +188,9 @@ server race, the data partition, slow system services, package visibility).
 The last booted both emulators, installed and seeded, then lost the API 37
 emulator's system services in the first scenario ("Can't find service:
 package"), most likely its system server restarting under the runner's load.
-Until it passes there, it is a local test: all 8 scenarios pass from a cold
-boot on an M-series Mac (arm64 images).
+Until it passes there, it is a local test: all 8 media scenarios pass from a
+cold boot on an M-series Mac (arm64 images), and the records
+scenarios on running emulators (5 November 2026).
 
 ### Device test
 
@@ -278,3 +296,4 @@ Still to check on the phones (next phone session):
 - Running out of space mid-copy (only the up-front refusal was tested).
 - Motion photos, camera HEIC and DNG from real cameras.
 - Attestation (the role check is unattested; the seam is in `role/`).
+- Step 2 with test records.

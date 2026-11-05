@@ -92,6 +92,19 @@ class MainActivity : Activity() {
         if (controller.debuggable && i?.hasExtra("test_scope") == true) controller.testScope = i.getStringExtra("test_scope")
         if (controller.debuggable && i?.hasExtra("test_role") == true) controller.testRole = i.getStringExtra("test_role")
         if (controller.debuggable && i?.hasExtra("test_tcp") == true) controller.testTcp = i.getStringExtra("test_tcp")
+        // Test builds: "take" asks for the SMS role, "give:PKG" offers it back (the emulator test's probe).
+        if (controller.debuggable && i?.hasExtra("test_sms_role") == true) {
+            val v = i.getStringExtra("test_sms_role") ?: ""
+            val intent = if (v == "take") io.github.storskegg.graphite.role.SmsRole.requestIntent(this)
+                else io.github.storskegg.graphite.role.SmsRole.giveBackIntent(v.removePrefix("give:"))
+            launchForResult(intent).thenAccept { log("test_sms_role $v: ${if (it) "OK" else "cancelled"}") }
+        }
+        if (controller.debuggable && i?.hasExtra("test_seed_records") == true) {
+            Thread { io.github.storskegg.graphite.records.TestSeed.run(applicationContext) }.start()
+        }
+        if (controller.debuggable && i?.hasExtra("test_clear_records") == true) {
+            Thread { io.github.storskegg.graphite.records.TestSeed.clear(applicationContext) }.start()
+        }
         if (controller.debuggable && i?.hasExtra("test_free_bytes") == true) controller.testFreeBytes = i.getStringExtra("test_free_bytes")?.toLongOrNull()
     }
 
@@ -203,6 +216,28 @@ class MainActivity : Activity() {
         intentResult = f
         startIntentSenderForResult(sender, 42, null, 0, 0, 0)
         return f
+    }
+
+    /** Starts [intent] (a system dialog) and completes with whether it returned OK. */
+    fun launchForResult(intent: Intent): CompletableFuture<Boolean> {
+        val f = CompletableFuture<Boolean>()
+        intentResult = f
+        @Suppress("DEPRECATION") startActivityForResult(intent, 42)
+        return f
+    }
+
+    private var permissionResult: CompletableFuture<Set<String>>? = null
+
+    /** Asks for [perms] with Android's own prompts; completes with those granted. */
+    fun requestPermissionsFor(perms: List<String>): CompletableFuture<Set<String>> {
+        val f = CompletableFuture<Set<String>>()
+        permissionResult = f
+        requestPermissions(perms.toTypedArray(), 43)
+        return f
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (requestCode == 43) permissionResult?.complete(permissions.filterIndexed { i, _ -> grantResults.getOrNull(i) == 0 }.toSet())
     }
 
     @Deprecated("Activity API")

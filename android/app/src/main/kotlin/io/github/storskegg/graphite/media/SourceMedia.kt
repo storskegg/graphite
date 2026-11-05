@@ -17,6 +17,11 @@ import io.github.storskegg.graphite.ffi.planCheckRequest
 import io.github.storskegg.graphite.ffi.stripFile
 import io.github.storskegg.graphite.ffi.stripperVersion
 import io.github.storskegg.graphite.log
+import io.github.storskegg.graphite.records.Category
+import io.github.storskegg.graphite.records.Entries
+import io.github.storskegg.graphite.records.Listed
+import io.github.storskegg.graphite.records.RecordAccess
+import io.github.storskegg.graphite.records.SourceRecords
 import io.github.storskegg.graphite.session.FileEnd
 import io.github.storskegg.graphite.session.Msg
 import io.github.storskegg.graphite.ui.Choice
@@ -40,12 +45,19 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
 
         // 1. Inventory, the user's choices, then the manifest.
         val testScope = ctl.testScope
+        val readable = RecordAccess.request(ctl, Category.entries.toSet(), RecordAccess::read)
         ctl.show(Screen("Looking at your files", "Listing what is in scope…"))
         val all = SourceLibrary.list(ctl.app, testScope)
-        ch.send(Msg.INVENTORY, SourceLibrary.inventory(all, testScope).encode())
-        ctl.show(Screen("Choices on the new phone", "On the new phone, choose what to do with metadata, then continue there."))
+        val records = SourceRecords(ctl)
+        ch.send(Msg.INVENTORY, SourceLibrary.inventory(all, testScope).copy(records = records.counts(readable)).encode())
+        ctl.show(Screen("Choices on the new phone", "On the new phone, choose what to copy, then continue there."))
         val options = Options.decode(Flows.expect(ch, Msg.OPTIONS).body)
-        val (manifest, unremovable, files) = buildManifest(all.filter { options.androidMedia || !it.androidMedia }, options.metadata)
+        val (fileManifest, unremovable, files) = buildManifest(all.filter { options.androidMedia || !it.androidMedia }, options.metadata)
+        val listed: List<Listed> = records.list(options.records intersect (readable + Category.BLOCKED)) { text ->
+            ch.send(Msg.PROGRESS, ProgressMsg(text, 0, 0).encode())
+            ctl.show(Screen("Preparing the manifest", "$text…"))
+        }
+        val manifest = fileManifest.copy(records = listed.map { it.entry })
         val signedManifest = p.session.signManifest(manifest)
         ch.send(Msg.MANIFEST, ManifestMsg(signedManifest, unremovable).encode())
 
@@ -66,10 +78,9 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
         Flows.expect(ch, Msg.START)
         // The same map as the new phone's, from the same manifest and plan.
         val statuses = plan.entries.sortedBy { it.index }.map { it.status }
-        val toCopy = statuses.indices.filter { statuses[it] == io.github.storskegg.graphite.ffi.PlanStatus.TO_COPY }
-        val primaries = Comparison.primaries(manifest.files, toCopy)
-        val tiles = TileMap(manifest.files.map { it.path }, manifest.files.map { it.sent.size.toLong() }, TileMap.initial(statuses),
-            toCopy.associateWith { primaries.getValue(manifest.files[it].sent.blake3.hex()) })
+        val names = Entries.names(manifest)
+        val sizes = Entries.sizes(manifest)
+        val tiles = TileMap(names, Entries.sizes(manifest), TileMap.initial(statuses), Entries.primaries(manifest, statuses))
 
         // 4. Answer requests until the target is done.
         var sent = 0L
@@ -82,15 +93,19 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
                 Msg.REQUEST -> {
                     val i = BinReader(m.body).u32().toInt()
                     planCheckRequest(plan, i.toUInt())
-                    val e = manifest.files[i]
                     val n = ++count
                     val before = sent
                     tiles.set(i, Tile.ACTIVE)
-                    meter.update(sent, n, e.path, force = true)
-                    sendFile(i, files[i], e, manifest.metadata, i in unremovable) { off -> meter.update(before + off, n, e.path) }
+                    meter.update(sent, n, names[i], force = true)
+                    if (i < manifest.files.size) {
+                        val e = manifest.files[i]
+                        sendFile(i, files[i], e, manifest.metadata, i in unremovable) { off -> meter.update(before + off, n, e.path) }
+                    } else {
+                        sendRecord(i, listed[i - manifest.files.size], records)
+                    }
                     // Sent; the new phone's verification says whether it arrived right.
                     tiles.set(i, Tile.DONE)
-                    sent += e.sent.size.toLong()
+                    sent += sizes[i]
                 }
                 Msg.COPY_DONE -> break
                 Msg.ERROR -> throw io.github.storskegg.graphite.session.PeerAbortException(BinReader(m.body).str())
@@ -124,16 +139,16 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
         val summary = Receipts.summary(receipt.entries)
         val notes = receipt.entries.filter { it.note.isNotEmpty() }
         val noteText = if (notes.isEmpty()) "" else "\n\nNotes:\n" + notes.take(20).joinToString("\n") {
-            "${manifest.files[it.index.toInt()].path}: ${it.note}"
+            "${names[it.index.toInt()]}: ${it.note}"
         } + if (notes.size > 20) "\n… and ${notes.size - 20} more" else ""
         log("receipt verified: $summary")
         tiles.applyReceipt(receipt.entries)
         log("tiles after verification: ${tiles.snapshot().summary()}")
-        notes.forEach { log("receipt note: ${manifest.files[it.index.toInt()].path}: ${it.note}") }
+        notes.forEach { log("receipt note: ${names[it.index.toInt()]}: ${it.note}") }
 
-        // 6. Removal, only if the user asks.
+        // 6. Removal, only if the user asks, and only of files: messages, calls and contacts are never removed.
         val removable = receipt.entries.filter { it.status == ReceiptStatus.CopiedVerified || it.status == ReceiptStatus.PresentVerified }
-            .map { it.index.toInt() }
+            .map { it.index.toInt() }.filter { it < manifest.files.size }
         while (true) {
             val a = ctl.ask(Screen("Copy verified", "The new phone signed a receipt and this phone checked it.\n\n$summary.$noteText" +
                 if (removable.isEmpty()) "" else "\n\nYou can now move what was verified to this phone's trash (kept for 30 days). Nothing is preselected.",
@@ -159,6 +174,22 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
     private fun answerSpeedTest() {
         val n = BinReader(Flows.expect(ch, Msg.SPEED_TEST).body).u32().toInt().coerceIn(0, 64 shl 20)
         ch.send(Msg.SPEED_TEST, ByteArray(n))
+    }
+
+    /** A record's payload, read again for an MMS; not sent if it changed since the manifest. */
+    private fun sendRecord(i: Int, l: Listed, records: SourceRecords) {
+        val payload = runCatching { records.payload(l) }.onFailure { log("send ${l.entry.label}: $it") }.getOrNull()
+        if (payload == null) {
+            log("changed since the manifest: ${l.entry.label}")
+            ch.send(Msg.FILE_END, BinWriter().u32(i).u8(FileEnd.CHANGED).finish())
+            return
+        }
+        ch.send(Msg.FILE_BEGIN, BinWriter().u32(i).i64(payload.size.toLong()).finish())
+        val piece = ch.maxSingleChunkBody - 4
+        for (off in payload.indices step piece) {
+            ch.send(Msg.FILE_DATA, BinWriter().u32(i).raw(payload, off, minOf(piece, payload.size - off)).finish())
+        }
+        ch.send(Msg.FILE_END, BinWriter().u32(i).u8(FileEnd.OK).finish())
     }
 
     /** Opens the file as it will be sent: stripped when chosen, unchanged when it can't be or isn't media. */
