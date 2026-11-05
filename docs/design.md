@@ -246,10 +246,11 @@ Not protected against:
 | Data | Possible | Note |
 |---|---|---|
 | Photos, videos, screenshots, downloads, documents, audio | Yes | Step 1, [media.md](media.md) |
-| Contacts, local calendars | Yes | Later step; account-backed ones resync instead |
-| SMS/MMS | Yes | Target app briefly holds the SMS role, taken and given back with `cmd role` over the adb link (no prompt) or the system dialog; only the role holder can write. Dates, threads and MMS images survive ([spike](spike.md#6-sms-mms-and-call-log-on-the-target)). Incoming MMS is not downloaded while graphite holds the role, so the window is kept to the inserts. RCS cannot be read |
-| Call log | Yes | Hard-restricted permission; needs an adb-style install. On the target the adb shell itself can write it. `last_modified` and `geocoded_location` are rewritten; names come from Contacts |
-| Blocked numbers | Yes | Read and written with the adb shell on both phones (`content://com.android.blockednumber`); no role needed ([spike](spike.md#7-blocked-numbers-and-spam-marks)) |
+| Contacts | Yes | Step 2, [records.md](records.md): every contact, account-backed ones too, stored on the new phone |
+| Local calendars | Yes | Later step |
+| SMS/MMS | Yes | Step 2, [records.md](records.md). Target app briefly holds the SMS role, taken with the system dialog and given back through the previous SMS app (an app cannot hand the role on itself; `cmd role` over an adb link needs no prompt); only the role holder can write. Dates, threads and MMS images survive ([spike](spike.md#6-sms-mms-and-call-log-on-the-target)). Incoming MMS is not downloaded while graphite holds the role, so the window is kept to the inserts. RCS cannot be read |
+| Call log | Yes | Step 2, [records.md](records.md). Hard-restricted permission; needs an adb-style install. On the target the adb shell itself can write it. `last_modified` and `geocoded_location` are rewritten; names come from Contacts |
+| Blocked numbers | Yes | Step 2, [records.md](records.md). Read and written by graphite holding the SMS role on each phone in turn; the adb shell can too ([spike](spike.md#7-blocked-numbers-and-spam-marks)), but over the cable that would carry them outside the encrypted channel |
 | Spam marks | No | Kept privately by Google Phone and Google Messages. Numbers blocked as spam move with the blocked list; spam-blocked calls move with the call log |
 | App APKs | Partly | Store reinstall list preferred; Play Integrity apps may refuse to run |
 | App private data | No | Needs root. Guided per-app exports instead |

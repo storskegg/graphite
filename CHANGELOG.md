@@ -51,6 +51,9 @@ releases yet.
   second run, resume after a reset socket, space and battery refusals, removal.
   A device test records what MediaStore does with `DATE_TAKEN`. CI: Android unit
   tests on every push, the emulator test on request.
+- Design for step 2: messages, calls, contacts and blocked numbers as records
+  in the same signed manifest, plan and receipt, identified by normalized
+  fields; the SMS role window; attestation ([docs/records.md](docs/records.md)).
 
 ### Fixed
 
