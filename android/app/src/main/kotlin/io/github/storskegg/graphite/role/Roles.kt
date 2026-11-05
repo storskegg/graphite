@@ -29,11 +29,9 @@ fun interface RoleCheck {
  * this; design.md ("How each phone knows what it is") requires Android key
  * attestation against GrapheneOS's published verified-boot keys instead.
  *
- * ATTESTATION SEAM: replace this with an attesting [RoleCheck] (key attestation
- * with a challenge, verified-boot key against the shipped GrapheneOS
- * fingerprints, locked bootloader), and have the source verify the target's
- * fresh attestation chain over the paired session. [RoleResult.attested] and
- * the UI note follow from it.
+ * The fallback of [io.github.storskegg.graphite.attest.AttestedRoleCheck] when
+ * the phone has no hardware attestation (an emulator), and what it checks a
+ * phone with GrapheneOS's apps against.
  */
 object UnattestedRoleCheck : RoleCheck {
     /** System packages only GrapheneOS ships. Two are required, so one stray app does not decide it. */

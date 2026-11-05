@@ -13,6 +13,10 @@ object Msg {
     const val ACCEPTED = 0x03
     /** Target: send a test payload to measure the link (and, in the tracer, a test file). */
     const val SPEED_TEST = 0x04
+    /** Source: prove you are GrapheneOS (the challenge comes from the transcript, docs/records.md). */
+    const val ATTEST = 0x05
+    /** Target: the attestation chain, or why there is none. */
+    const val ATTESTATION = 0x06
 
     /** Source: what is in scope and how much, before hashing. */
     const val INVENTORY = 0x20

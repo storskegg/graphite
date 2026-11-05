@@ -25,6 +25,8 @@ dependencies {
     // uniffi's Kotlin bindings call into the Rust core through JNA.
     implementation("net.java.dev.jna:jna:5.19.1@aar")
     testImplementation("junit:junit:4.13.2")
+    // Unit tests only: builds synthetic attestation chains to test the checker (attest/AttestationCheck.kt).
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.80")
     // Device tests (app/src/androidTest): what MediaStore does with dates, on an emulator.
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

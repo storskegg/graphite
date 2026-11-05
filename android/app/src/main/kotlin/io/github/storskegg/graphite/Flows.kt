@@ -38,7 +38,7 @@ class Paired(val session: Session, val channel: Channel, val peer: Caps)
  * pair with the six digits, exchange capabilities, then the transfer.
  */
 class Flows(private val ctl: Controller) {
-    private val role = ctl.role.role
+    private val role = ctl.awaitRole().role
 
     fun run() {
         if (role == null) {
@@ -142,9 +142,11 @@ class Flows(private val ctl: Controller) {
                 throw StoppedException("You refused the old phone, so nothing was copied.")
             }
             channel.send(Msg.ACCEPTED, ByteArray(0))
+            io.github.storskegg.graphite.attest.SessionAttestation.answer(ctl, session, channel)
         } else {
             ctl.show(Screen("Waiting for the new phone", "Paired with ${peer.name}. Accept this phone on the new phone."))
             expect(channel, Msg.ACCEPTED)
+            io.github.storskegg.graphite.attest.SessionAttestation.check(ctl, session, channel)
         }
         return Paired(session, channel, peer)
     }

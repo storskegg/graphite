@@ -61,7 +61,13 @@ releases yet.
   back; a second run copies nothing. graphite holds the SMS role only while it
   needs it and asks you to give it back to your messaging app.
 - `android/emulator-test.sh`: `records` and `records_again` with synthetic test
-  records.
+  records, and `attest` (the old phone refuses an emulator). Phone test plan:
+  [android/phone-test-plan.md](android/phone-test-plan.md).
+- `android/`: key attestation. Each phone's role comes from its own attestation,
+  and the old phone checks the new one's chain for the session (Google's roots,
+  revocation list, challenge, hardware, locked bootloader, GrapheneOS's
+  verified-boot keys, patch level) before sending anything. The lists ship
+  with the app; `android/attestation-data.sh` refreshes them.
 
 ### Fixed
 

@@ -91,6 +91,7 @@ class MainActivity : Activity() {
         if (i?.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) log("accessory attached (launched by the other phone)")
         if (controller.debuggable && i?.hasExtra("test_scope") == true) controller.testScope = i.getStringExtra("test_scope")
         if (controller.debuggable && i?.hasExtra("test_role") == true) controller.testRole = i.getStringExtra("test_role")
+        if (controller.debuggable && i?.hasExtra("test_attestation") == true) controller.testAttestation = i.getStringExtra("test_attestation")
         if (controller.debuggable && i?.hasExtra("test_tcp") == true) controller.testTcp = i.getStringExtra("test_tcp")
         // Test builds: "take" asks for the SMS role, "give:PKG" offers it back (the emulator test's probe).
         if (controller.debuggable && i?.hasExtra("test_sms_role") == true) {

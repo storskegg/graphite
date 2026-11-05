@@ -11,7 +11,7 @@ import android.util.Log
 import io.github.storskegg.graphite.auth.AuthGate
 import io.github.storskegg.graphite.role.AppRole
 import io.github.storskegg.graphite.role.RoleResult
-import io.github.storskegg.graphite.role.UnattestedRoleCheck
+import io.github.storskegg.graphite.attest.AttestedRoleCheck
 import io.github.storskegg.graphite.ui.Answer
 import io.github.storskegg.graphite.ui.Screen
 import io.github.storskegg.graphite.ui.Status
@@ -33,13 +33,21 @@ class StoppedException(val why: String = "") : Exception("stopped")
  */
 class Controller(val app: Context) {
     val gate = AuthGate(app)
-    private val checkedRole: RoleResult = UnattestedRoleCheck.check(app)
+    /** From this phone's own key attestation, which takes a moment: worked out off the main thread. */
+    @Volatile private var checkedRole: RoleResult? = null
 
     /** This phone's role; test builds can force it with `test_role` (for the emulator harness). */
     val role: RoleResult get() = when (if (debuggable) prefs.getString("test_role", null) else null) {
         "target" -> RoleResult(AppRole.TARGET, false, "TEST: forced to be the new phone (test_role).")
         "source" -> RoleResult(AppRole.SOURCE, false, "TEST: forced to be the old phone (test_role).")
-        else -> checkedRole
+        else -> checkedRole ?: RoleResult(null, false, "Checking this phone with hardware attestation…")
+    }
+
+    /** The role once the attestation check is done (the flow thread waits for it). */
+    @Synchronized
+    fun awaitRole(): RoleResult {
+        if (checkedRole == null) { checkedRole = AttestedRoleCheck.check(app); updateStatus() }
+        return role
     }
     val usbManager: UsbManager = app.getSystemService(UsbManager::class.java)
     private val main = Handler(Looper.getMainLooper())
@@ -61,6 +69,7 @@ class Controller(val app: Context) {
         }, IntentFilter(Intent.ACTION_SCREEN_OFF), Context.RECEIVER_NOT_EXPORTED)
         gate.onChange { updateStatus() }
         updateStatus()
+        Thread({ awaitRole() }, "graphite-role").start()
     }
 
     fun onChange(l: () -> Unit) = synchronized(listeners) { listeners += l }
@@ -142,6 +151,14 @@ class Controller(val app: Context) {
     var testTcp: String?
         get() = if (debuggable && io.github.storskegg.graphite.usb.TestTransport.AVAILABLE) prefs.getString("test_tcp", null)?.ifEmpty { null } else null
         set(v) { prefs.edit().putString("test_tcp", v).apply() }
+
+    /**
+     * Test builds only: "skip" lets the old phone go on when the new phone's attestation fails
+     * (emulators can't pass it). Release builds always enforce it.
+     */
+    var testAttestation: String?
+        get() = if (debuggable) prefs.getString("test_attestation", null)?.ifEmpty { null } else null
+        set(v) { prefs.edit().putString("test_attestation", v).apply() }
 
     /** Test builds only: the target's free space as preflight sees it, to test the space check. */
     var testFreeBytes: Long?

@@ -5,7 +5,8 @@ phone); on any other Android 11+ phone it is the **source** (the old phone).
 The two phones talk over a USB-C cable only: Android Open Accessory, with the
 target as USB host. It copies **media**: photos, videos, audio, downloads and
 documents ([docs/media.md](../docs/media.md)); and **messages, calls, contacts and
-blocked numbers** ([docs/records.md](../docs/records.md)).
+blocked numbers** ([docs/records.md](../docs/records.md)). The old phone checks
+the new one's hardware attestation before it sends anything.
 
 ## Build
 
@@ -46,7 +47,9 @@ old phone over the cable (needs USB debugging on the old phone, see below).
    install it over the cable (old phone has USB debugging on) or explains how
    to sideload it.
 4. Both phones show six digits; compare them and confirm on both. Accept the
-   old phone on the new one.
+   old phone on the new one. The old phone then checks the new phone's key
+   attestation (GrapheneOS, bootloader locked) and stops, saying why on both
+   phones, if it doesn't pass.
 5. On the new phone, choose what to do with metadata (nothing is preselected),
    whether to include `Android/media/`, and which of messages, the call log,
    contacts and blocked numbers to copy (ticked where the old phone has any).
@@ -71,10 +74,17 @@ from the same manifest; during verification the old phone's colours come from
 the new phone's progress messages (only the squares that changed), and the
 signed receipt sets the final colours on both.
 
-**The role check is not attested yet.** A phone counts as GrapheneOS when
-GrapheneOS's own system apps are present. The screen and this README say so;
-hardware attestation goes in at the marked seam in
-[`role/Roles.kt`](app/src/main/kotlin/io/github/storskegg/graphite/role/Roles.kt).
+**Attestation.** Each phone works out its role from its own key attestation:
+a chain rooted in Google's keys with one of GrapheneOS's verified-boot keys is
+a target; any other hardware-attested phone a source; a phone with
+GrapheneOS's apps that doesn't match is refused. Without hardware attestation
+(an emulator) it falls back to the unattested check (GrapheneOS's system apps)
+and the status line says so. After pairing the old phone checks the new one's
+fresh chain for this session (`attest/`, [docs/records.md](../docs/records.md)).
+The roots, the revocation list and GrapheneOS's signed key list ship in
+`app/src/main/assets/attestation/`; `./attestation-data.sh` refreshes them and
+checks GrapheneOS's signature. The real check has not run on a GrapheneOS phone
+yet ([phone-test-plan.md](phone-test-plan.md)).
 
 ### Test builds
 
@@ -94,6 +104,7 @@ they ignore the other test extras:
 | `test_role target` or `source` | Forces the role (an emulator is never GrapheneOS) |
 | `test_tcp listen:PORT` or `HOST:PORT` | Links over a TCP socket instead of USB (`usb/TestTransport.kt`, in the debug source set only; release builds have a stub and no network permission) |
 | `test_free_bytes N` | Pretends the new phone has N bytes free (`x` clears it) |
+| `test_attestation skip` | The old phone goes on when the new phone's attestation fails (emulators can't pass it); an empty value enforces it again |
 | `test_seed_records 1` | Writes the synthetic test records (+1 555 010x numbers, "GT …" contacts); messages and blocked numbers only while graphite holds the SMS role |
 | `test_clear_records 1` | Deletes this phone's test records, and only those (the same role rule) |
 | `test_sms_role take` or `give:PKG` | Asks for the SMS role, or offers it to PKG (Android removes that intent: kept to show it) |
@@ -109,6 +120,7 @@ With a test scope, the old phone also reads only test records: numbers starting
 | `usb/` | USB role, AOA switch, host and accessory pipes, the connection keeper, setup over the cable (adb client) |
 | `auth/` | The user-presence gate: an auth-bound Keystore key signs a nonce |
 | `role/` | Target or source; the SMS role |
+| `attest/` | Key attestation: this phone's chain, a DER reader, the source's check of the target |
 | `records/` | Messages, calls, contacts and blocked numbers: provider rows, payloads, identities, both sides, the SMS-role window, test data |
 | `session/` | Encrypted channel on top of the link, message types |
 | `media/` | Source library, target store and hash cache, comparison, preflight, journal, receipts, both flows |
@@ -126,6 +138,7 @@ With a test scope, the old phone also reads only test records: numbers starting
 | JNA | 5.19.1 | uniffi's Kotlin bindings call the Rust library through JNA |
 | memmap2 | 0.9.12 | `core-ffi/`: memory-maps files for the stripper and hashing, so videos aren't read into memory. Depends only on `libc` |
 | JUnit | 4.13.2 | Unit tests (JVM only) |
+| Bouncy Castle PKIX (`bcpkix-jdk18on`) | 1.80 | Unit tests only: builds synthetic attestation chains for the checker's tests. Not in the APK |
 | AndroidX Test runner | 1.6.2 | Device tests only (`app/src/androidTest`), not in the APK |
 | AndroidX Test JUnit | 1.2.1 | Device tests only: the JUnit 4 runner for them |
 
@@ -141,13 +154,15 @@ peer), comparison (including the no-duplicates rule both ways), preflight
 maths, the journal, receipt mapping, the wire messages, progress and timing,
 the cable setup's version check and the session loop; record payloads and
 identities (number formats, MMS parts in any order, joined contacts), the test
-scope, and the wire messages' record fields. `core-ffi` has Rust tests
+scope, the wire messages' record fields; the attestation checker against
+synthetic chains (each refusal, the patch warning, the shipped files) and the
+DER reader. `core-ffi` has Rust tests
 for the wrapper and the stripped-file reader (`cargo test` in `core-ffi/`).
 
 ### Emulator test
 
 ```bash
-android/emulator-test.sh            # keep again strip display resume space battery records records_again removal
+android/emulator-test.sh            # keep again strip display resume space battery records records_again removal attest
 android/emulator-test.sh speed      # timing only: 400 small photos and 80 MB
 ```
 
@@ -173,6 +188,7 @@ receipts and MediaStore rows:
 | records | Synthetic records seeded on the source by graphite itself (5 SMS, one saved twice; an MMS with a picture; 3 calls; 2 contacts; 2 blocked numbers; and an SMS outside the test range): all copied with the media, the duplicate once, the outside one not at all; the target holds 4 SMS, 1 MMS with its picture, 3 calls, 2 contacts and 2 blocked numbers; both phones took the SMS role through Android's dialog and gave it back (the test gives it back with `cmd role`, standing in for Messages' prompt) |
 | records_again | A second run copies nothing and leaves the same records; then both phones delete their test records |
 | removal | The source moves the verified files to its trash (it taps Android's own dialog, test-only) |
+| attest | With attestation enforced, the old phone refuses the emulator ("not rooted in Google's hardware attestation keys") and the new phone shows why. The other scenarios run with `test_attestation skip` |
 
 Real phones stay the test for AOA, the USB role, the cable install and
 attestation. `KEEP=1` leaves the emulators running; `HEADLESS=0` shows them;
@@ -188,11 +204,15 @@ server race, the data partition, slow system services, package visibility).
 The last booted both emulators, installed and seeded, then lost the API 37
 emulator's system services in the first scenario ("Can't find service:
 package"), most likely its system server restarting under the runner's load.
-Until it passes there, it is a local test: all 8 media scenarios pass from a
-cold boot on an M-series Mac (arm64 images), and the records
-scenarios on running emulators (5 November 2026).
+Until it passes there, it is a local test on an M-series Mac (arm64 images):
+the 8 media scenarios pass from a cold boot (4 November 2026), and all 11 in
+one run with the emulators already up (5 November 2026).
 
 ### Device test
+
+`app/src/androidTest/.../AttestationDeviceTest.kt` attests the device itself and
+runs the checker on the chain: on an emulator it must be refused at the root;
+on the GrapheneOS phone it should pass.
 
 `app/src/androidTest/.../DateTakenTest.kt` records what MediaStore makes of
 `DATE_TAKEN` for a copy graphite publishes, and that steering it through the
@@ -295,5 +315,6 @@ Still to check on the phones (next phone session):
   receipt's notes).
 - Running out of space mid-copy (only the up-front refusal was tested).
 - Motion photos, camera HEIC and DNG from real cameras.
-- Attestation (the role check is unattested; the seam is in `role/`).
-- Step 2 with test records.
+- Attestation, and step 2 with test records.
+
+The ordered plan for the next session is [phone-test-plan.md](phone-test-plan.md).

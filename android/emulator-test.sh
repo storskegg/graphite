@@ -14,6 +14,8 @@
 #             copied with the media; graphite takes the SMS role on both phones and gives it back
 #   records_again - the same again: nothing copied, nothing duplicated; then the test records go
 #   removal - the source moves verified files to its trash
+#   attest  - with attestation enforced (the other scenarios skip it: emulators can't pass), the
+#             old phone refuses the emulator and both phones say why
 #   speed   - not in the default run: SPEED_FILES small photos (default 400) and two 40 MB
 #             files, copied with "Keep all"; prints the time and where it went on each side
 # Usage: android/emulator-test.sh [scenario...]   (default: all but speed, in that order)
@@ -41,7 +43,7 @@ S=emulator-5582   # source: the "old phone", API 30
 FIX="$REPO/strip/tests/fixtures"
 LOG=$(mktemp -d)/graphite-emulator-test
 mkdir -p "$LOG"
-if [ $# -gt 0 ]; then SCENARIOS=("$@"); else SCENARIOS=(keep again strip display resume space battery records records_again removal); fi
+if [ $# -gt 0 ]; then SCENARIOS=("$@"); else SCENARIOS=(keep again strip display resume space battery records records_again removal attest); fi
 SMS_APP=com.google.android.apps.messaging   # both images' default SMS app
 
 say() { printf '\n== %s\n' "$*"; }
@@ -113,7 +115,7 @@ prepare() {  # prepare SERIAL ROLE TCP
     sh_ "$1" "pm grant $PKG android.permission.POST_NOTIFICATIONS" >/dev/null 2>&1 || true   # API 33+
     # Right after an install the activity may not resolve yet ("does not exist").
     for try in $(seq 15); do
-        sh_ "$1" "am force-stop $PKG; am start -n $PKG/.MainActivity --es test_role $2 --es test_tcp $3 --es test_scope graphite-test" 2>&1 | grep -q '^Error' || return 0
+        sh_ "$1" "am force-stop $PKG; am start -n $PKG/.MainActivity --es test_role $2 --es test_tcp $3 --es test_scope graphite-test --es test_attestation skip" 2>&1 | grep -q '^Error' || return 0
         sleep 2
     done
     echo "FAIL: graphite would not start on $1" >&2; exit 1
@@ -408,6 +410,16 @@ records_again() {
     expect "$r" "^0 copied and verified, $(( media + 13 )) already on the new phone"
     [ "$(held_records)" = "4 1 3 2 2" ] || fail "a second run changed the new phone's records: $(held_records)"
     clear_records
+}
+
+attest() {  # the old phone refuses the emulator's software attestation; both phones say why
+    sh_ "$S" "am start -n $PKG/.MainActivity --es test_attestation ''" >/dev/null
+    pair_both
+    waitfor "$S" "not rooted in Google's" 120
+    waitfor "$T" "the old phone refused this phone" 120
+    "$ADB" -s "$S" logcat -d | grep -qF "attestation of the new phone: the new phone's attestation is not rooted" || fail "the source did not log the refusal"
+    tap "$S" "Start again"; tap "$T" "Done"
+    sh_ "$S" "am start -n $PKG/.MainActivity --es test_attestation skip" >/dev/null
 }
 
 removal() {
