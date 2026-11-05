@@ -269,6 +269,7 @@ mod tests {
             metadata: MetadataChoice::KeepAll,
             stripper_version: "1".into(),
             files: vec![entry("DCIM/a.jpg"), entry("DCIM/b.jpg")],
+            records: vec![],
         }
     }
 

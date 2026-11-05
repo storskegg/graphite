@@ -40,9 +40,10 @@ video is never read into memory whole. memmap2's only dependency is `libc`.
 ### Core
 
 The same as the core's (see [core/README.md](../core/README.md)):
-`TargetPairing`, `SourcePairing`, `Session`, `FileHasher`, the manifest, plan
-and receipt records, and the free functions `plan_totals`,
-`plan_check_request`, `manifest_hash`, `plan_hash`, `blake3_hash`,
+`TargetPairing`, `SourcePairing`, `Session`, `FileHasher`, the manifest (with
+its `RecordEntry` list), plan and receipt records, and the free functions
+`plan_totals`, `plan_check_request`, `manifest_hash`, `plan_hash`,
+`blake3_hash`, `record_identity`,
 `chunk_size` and `chunk_overhead`. Errors come out as `CoreError`, with one
 variant for each core error.
 

@@ -54,6 +54,8 @@ releases yet.
 - Design for step 2: messages, calls, contacts and blocked numbers as records
   in the same signed manifest, plan and receipt, identified by normalized
   fields; the SMS role window; attestation ([docs/records.md](docs/records.md)).
+- `core/`, `core-ffi/`: record entries in the manifest, numbered after the
+  files in plans and receipts, and `record_identity`.
 
 ### Fixed
 

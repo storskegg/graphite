@@ -1,5 +1,5 @@
 //! The manifest the source signs and the receipt the target signs
-//! (see docs/media.md), with their canonical encoding.
+//! (see docs/media.md and docs/records.md), with their canonical encoding.
 
 use crate::Error;
 use crate::codec::{Reader, Writer};
@@ -37,11 +37,40 @@ pub struct ManifestEntry {
     pub sent: FileDigest,
 }
 
+/// The kinds of record step 2 copies (docs/records.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum RecordKind {
+    Sms = 0,
+    Mms = 1,
+    Call = 2,
+    Contact = 3,
+    BlockedNumber = 4,
+}
+
+/// A message, call, contact or blocked number: identified by its normalized
+/// fields, sent as a canonical payload of its provider rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordEntry {
+    pub kind: RecordKind,
+    /// What the screens show, `/`-separated, for example `Messages/+15550100/2020-01-02 09:04`.
+    pub label: String,
+    /// When the message was sent or the call made, in milliseconds since the epoch.
+    pub date_ms: Option<i64>,
+    /// BLAKE3 of the record's identity fields: two records with the same
+    /// identity are the same item.
+    pub identity: [u8; 32],
+    /// The payload that will be sent.
+    pub sent: FileDigest,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub metadata: MetadataChoice,
     pub stripper_version: String,
     pub files: Vec<ManifestEntry>,
+    /// Numbered after the files: entry `i` is `records[i - files.len()]`.
+    pub records: Vec<RecordEntry>,
 }
 
 /// What the target found for one manifest entry during comparison.
@@ -137,16 +166,19 @@ pub struct Receipt {
 /// The totals a plan with these entries must carry.
 pub fn plan_totals(manifest: &Manifest, entries: &[PlanEntry]) -> PlanTotals {
     let mut totals = PlanTotals::default();
+    // Files once per sent hash, records once per identity.
     let mut counted = std::collections::HashSet::new();
+    let mut identities = std::collections::HashSet::new();
     for e in entries {
         match e.status {
             PlanStatus::ToCopy => {
                 totals.to_copy += 1;
-                if let Some(f) = manifest.files.get(e.index as usize) {
-                    if counted.insert(f.sent.blake3) {
-                        totals.bytes_to_copy = totals.bytes_to_copy.saturating_add(f.sent.size);
-                    }
-                }
+                let size = match manifest.entry(e.index) {
+                    Some(Entry::File(f)) if counted.insert(f.sent.blake3) => f.sent.size,
+                    Some(Entry::Record(r)) if identities.insert(r.identity) => r.sent.size,
+                    _ => 0,
+                };
+                totals.bytes_to_copy = totals.bytes_to_copy.saturating_add(size);
             }
             PlanStatus::Present => totals.present += 1,
             PlanStatus::PresentInTrash => totals.present_in_trash += 1,
@@ -212,7 +244,45 @@ fn count(n: usize) -> u32 {
     u32::try_from(n).expect("over 4 billion entries")
 }
 
+/// A manifest entry by index: a file, or a record after the files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entry<'a> {
+    File(&'a ManifestEntry),
+    Record(&'a RecordEntry),
+}
+
+impl RecordKind {
+    fn from_u8(v: u8) -> Result<Self, Error> {
+        Ok(match v {
+            0 => Self::Sms,
+            1 => Self::Mms,
+            2 => Self::Call,
+            3 => Self::Contact,
+            4 => Self::BlockedNumber,
+            _ => return Err(Error::Malformed),
+        })
+    }
+}
+
 impl Manifest {
+    /// Files and records together: the number of plan and receipt entries.
+    pub fn len(&self) -> usize {
+        self.files.len() + self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Entry `index`: `files[index]`, or `records[index - files.len()]`.
+    pub fn entry(&self, index: u32) -> Option<Entry<'_>> {
+        let i = index as usize;
+        match self.files.get(i) {
+            Some(f) => Some(Entry::File(f)),
+            None => self.records.get(i - self.files.len()).map(Entry::Record),
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<(), Error> {
         let keep = self.metadata == MetadataChoice::KeepAll;
         for f in &self.files {
@@ -235,6 +305,13 @@ impl Manifest {
             w.i64(f.modified_ms);
             digest(&mut w, &f.original);
             digest(&mut w, &f.sent);
+        }
+        w.u32(count(self.records.len()));
+        for r in &self.records {
+            w.u8(r.kind as u8).str(&r.label);
+            optional_i64(&mut w, r.date_ms);
+            w.fixed(&r.identity);
+            digest(&mut w, &r.sent);
         }
         w.finish()
     }
@@ -261,11 +338,23 @@ impl Manifest {
                 sent: read_digest(&mut r)?,
             });
         }
+        let n = r.u32()?;
+        let mut records = Vec::new();
+        for _ in 0..n {
+            records.push(RecordEntry {
+                kind: RecordKind::from_u8(r.u8()?)?,
+                label: r.str()?,
+                date_ms: read_optional_i64(&mut r)?,
+                identity: r.array()?,
+                sent: read_digest(&mut r)?,
+            });
+        }
         r.end()?;
         Ok(Manifest {
             metadata,
             stripper_version,
             files,
+            records,
         })
     }
 }
@@ -288,7 +377,7 @@ impl Plan {
 
     /// The rules, against the manifest the plan answers.
     pub(crate) fn validate(&self, manifest: &Manifest) -> Result<(), Error> {
-        if each_entry_once(manifest.files.len(), self.entries.iter().map(|e| e.index))
+        if each_entry_once(manifest.len(), self.entries.iter().map(|e| e.index))
             && self.totals == plan_totals(manifest, &self.entries)
         {
             Ok(())
@@ -364,10 +453,10 @@ impl Receipt {
     /// and an entry is not copied as unticked exactly when the plan has it
     /// unticked.
     pub(crate) fn validate(&self, manifest: &Manifest, plan: &Plan) -> Result<(), Error> {
-        if !each_entry_once(manifest.files.len(), self.entries.iter().map(|e| e.index)) {
+        if !each_entry_once(manifest.len(), self.entries.iter().map(|e| e.index)) {
             return Err(Error::InvalidReceipt);
         }
-        let mut unticked = vec![false; manifest.files.len()];
+        let mut unticked = vec![false; manifest.len()];
         for e in &plan.entries {
             unticked[e.index as usize] = e.status == PlanStatus::Unticked;
         }
@@ -457,10 +546,13 @@ mod tests {
             metadata: MetadataChoice::KeepAll,
             stripper_version: "1".into(),
             files: vec![entry(Some(1), added)],
+            records: vec![],
         };
         let without = manifest(None).encode();
         let with = manifest(Some(2)).encode();
         assert_eq!(with.len(), without.len() + 8);
+        // No records: a zero count at the end.
+        assert_eq!(without[without.len() - 4..], [0, 0, 0, 0]);
         for (m, bytes) in [(manifest(None), &without), (manifest(Some(2)), &with)] {
             let decoded = Manifest::decode(bytes).unwrap();
             assert_eq!(decoded, m);
@@ -473,6 +565,77 @@ mod tests {
         let mut bad = without.clone();
         bad[flag] = 2;
         assert_eq!(Manifest::decode(&bad), Err(Error::Malformed));
+    }
+
+    fn record(kind: RecordKind, identity: u8, size: u64) -> RecordEntry {
+        RecordEntry {
+            kind,
+            label: "Messages/+15550100/2020-01-02 09:04".into(),
+            date_ms: Some(1_577_955_845_123),
+            identity: [identity; 32],
+            sent: FileDigest {
+                size,
+                blake3: [identity ^ 0xff; 32],
+            },
+        }
+    }
+
+    /// Records are encoded after the files, decode to the same manifest and
+    /// are numbered after the files.
+    #[test]
+    fn records_follow_the_files() {
+        let m = Manifest {
+            metadata: MetadataChoice::KeepAll,
+            stripper_version: "1".into(),
+            files: vec![entry(None, None)],
+            records: vec![
+                record(RecordKind::Sms, 1, 10),
+                record(RecordKind::Contact, 2, 20),
+            ],
+        };
+        let bytes = m.encode();
+        let decoded = Manifest::decode(&bytes).unwrap();
+        assert_eq!(decoded, m);
+        assert_eq!(decoded.encode(), bytes);
+        assert_eq!(m.len(), 3);
+        assert_eq!(m.entry(0), Some(Entry::File(&m.files[0])));
+        assert_eq!(m.entry(2), Some(Entry::Record(&m.records[1])));
+        assert_eq!(m.entry(3), None);
+        // An unknown kind is refused.
+        let kind_at = bytes.len() - (1 + 4 + m.records[0].label.len() + 1 + 8 + 32 + 8 + 32) * 2;
+        assert_eq!(bytes[kind_at - 4..kind_at], [0, 0, 0, 2]);
+        let mut bad = bytes.clone();
+        bad[kind_at] = 9;
+        assert_eq!(Manifest::decode(&bad), Err(Error::Malformed));
+    }
+
+    /// Bytes to copy count each record identity once, like each file's sent hash.
+    #[test]
+    fn plan_totals_count_records_once_per_identity() {
+        let m = Manifest {
+            metadata: MetadataChoice::KeepAll,
+            stripper_version: "1".into(),
+            files: vec![entry(None, None)],
+            records: vec![
+                record(RecordKind::Sms, 1, 10),
+                record(RecordKind::Sms, 1, 10),
+                record(RecordKind::Call, 3, 30),
+                record(RecordKind::BlockedNumber, 4, 40),
+            ],
+        };
+        let e = |index, status| PlanEntry { index, status };
+        let t = plan_totals(
+            &m,
+            &[
+                e(0, PlanStatus::ToCopy),
+                e(1, PlanStatus::ToCopy),
+                e(2, PlanStatus::ToCopy),
+                e(3, PlanStatus::Present),
+                e(4, PlanStatus::Unticked),
+            ],
+        );
+        assert_eq!(t.bytes_to_copy, 1 + 10);
+        assert_eq!((t.to_copy, t.present, t.unticked), (3, 1, 1));
     }
 
     #[test]

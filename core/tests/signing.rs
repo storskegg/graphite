@@ -3,8 +3,8 @@ mod common;
 use common::pair;
 use graphite_core::{
     Error, FileDigest, FileHasher, Manifest, ManifestEntry, MetadataChoice, NotCopiedReason, Plan,
-    PlanEntry, PlanStatus, PlanTotals, Receipt, ReceiptEntry, ReceiptStatus, Session,
-    manifest_hash, plan_hash, plan_totals,
+    PlanEntry, PlanStatus, PlanTotals, Receipt, ReceiptEntry, ReceiptStatus, RecordEntry,
+    RecordKind, Session, manifest_hash, plan_hash, plan_totals, record_identity,
 };
 
 fn digest(bytes: &[u8]) -> FileDigest {
@@ -38,6 +38,7 @@ fn manifest() -> Manifest {
                 sent: digest(b"pdf"),
             },
         ],
+        records: vec![],
     }
 }
 
@@ -584,4 +585,85 @@ fn date_added_round_trips_with_and_without_a_value() {
         assert_eq!(verified.files[0].date_added_ms, added);
         assert_eq!(verified, m);
     }
+}
+
+/// Records are numbered after the files: the plan and the receipt must cover
+/// them too, and the source refuses a request for one that is not to copy.
+#[test]
+fn records_are_planned_and_receipted_after_the_files() {
+    let (source, target) = pair();
+    let mut m = manifest();
+    let sms = |body: &[u8]| RecordEntry {
+        kind: RecordKind::Sms,
+        label: "Messages/+15550100/2020-01-02 09:04".into(),
+        date_ms: Some(1_577_955_845_123),
+        identity: record_identity(
+            RecordKind::Sms,
+            &[b"1", b"+15550100", b"1577955845123", body],
+        ),
+        sent: digest(body),
+    };
+    m.records = vec![sms(b"hello"), sms(b"again")];
+    let signed_manifest = source.sign_manifest(&m).unwrap();
+    assert_eq!(target.verify_manifest(&signed_manifest).unwrap(), m);
+
+    let status = [
+        PlanStatus::ToCopy,
+        PlanStatus::Present,
+        PlanStatus::ToCopy,
+        PlanStatus::Present,
+    ];
+    let entries: Vec<_> = (0..4)
+        .map(|i| PlanEntry {
+            index: i,
+            status: status[i as usize],
+        })
+        .collect();
+    let p = Plan {
+        manifest_hash: manifest_hash(&signed_manifest),
+        totals: plan_totals(&m, &entries),
+        entries: entries.clone(),
+    };
+    assert_eq!(
+        p.totals.bytes_to_copy,
+        (b"jpeg without gps".len() + 5) as u64
+    );
+    let signed_plan = target.sign_plan(&p, &signed_manifest).unwrap();
+    let verified = source.verify_plan(&signed_plan, &signed_manifest).unwrap();
+    assert!(verified.check_request(2).is_ok());
+    assert_eq!(verified.check_request(3), Err(Error::NotInPlan));
+    assert_eq!(verified.check_request(4), Err(Error::NotInPlan));
+
+    // A plan that leaves out the last record does not verify.
+    let short = Plan {
+        manifest_hash: manifest_hash(&signed_manifest),
+        totals: plan_totals(&m, &entries[..3]),
+        entries: entries[..3].to_vec(),
+    };
+    assert!(target.sign_plan(&short, &signed_manifest).is_err());
+
+    let r = Receipt {
+        manifest_hash: manifest_hash(&signed_manifest),
+        plan_hash: plan_hash(&signed_plan),
+        entries: (0..4)
+            .map(|i| ReceiptEntry {
+                index: i,
+                status: if status[i as usize] == PlanStatus::ToCopy {
+                    ReceiptStatus::CopiedVerified
+                } else {
+                    ReceiptStatus::PresentVerified
+                },
+                note: String::new(),
+            })
+            .collect(),
+    };
+    let signed_receipt = target
+        .sign_receipt(&r, &signed_manifest, &signed_plan)
+        .unwrap();
+    assert_eq!(
+        source
+            .verify_receipt(&signed_receipt, &signed_manifest, &signed_plan)
+            .unwrap(),
+        r
+    );
 }

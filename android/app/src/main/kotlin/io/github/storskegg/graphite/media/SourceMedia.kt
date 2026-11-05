@@ -204,7 +204,7 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
             kept += f
         }
         if (unreadable > 0) log("$unreadable files could not be read and are left out")
-        return Triple(Manifest(choice, stripperVersion(), entries), unremovable, kept)
+        return Triple(Manifest(choice, stripperVersion(), entries, emptyList()), unremovable, kept)
     }
 
     private fun entry(f: SourceFile, original: FileDigest, sent: FileDigest) = ManifestEntry(

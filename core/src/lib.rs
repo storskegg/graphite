@@ -8,7 +8,8 @@
 //!   a six-digit code, ending in a [`Session`].
 //! - [`Session`]: chunked XChaCha20-Poly1305 each way, ML-DSA-65 signed
 //!   [`Manifest`] (source), [`Plan`] and [`Receipt`] (target).
-//! - [`FileHasher`]: streaming BLAKE3 of file contents.
+//! - [`FileHasher`]: streaming BLAKE3 of file contents; [`record_identity`]
+//!   for messages, calls, contacts and blocked numbers (`docs/records.md`).
 
 mod codec;
 mod document;
@@ -22,11 +23,12 @@ mod signing;
 mod stream;
 
 pub use document::{
-    FileDigest, Manifest, ManifestEntry, MetadataChoice, NotCopiedReason, Plan, PlanEntry,
-    PlanStatus, PlanTotals, Receipt, ReceiptEntry, ReceiptStatus, plan_totals,
+    Entry, FileDigest, Manifest, ManifestEntry, MetadataChoice, NotCopiedReason, Plan, PlanEntry,
+    PlanStatus, PlanTotals, Receipt, ReceiptEntry, ReceiptStatus, RecordEntry, RecordKind,
+    plan_totals,
 };
 pub use error::Error;
-pub use hash::FileHasher;
+pub use hash::{FileHasher, record_identity};
 pub use pairing::{SourcePairing, TargetPairing};
 pub use session::{Session, manifest_hash, plan_hash};
 pub use stream::{CHUNK_OVERHEAD, CHUNK_SIZE, Chunk};

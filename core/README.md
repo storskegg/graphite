@@ -4,7 +4,7 @@ The Rust crypto core: pairing, session keys, the chunked encrypted stream,
 signed manifests, plans and receipts, and file hashing. Synchronous, no I/O, a small
 API meant to be wrapped for Kotlin with uniffi later. The spec is
 [docs/design.md](../docs/design.md) (Pairing, Cryptography) and
-[docs/media.md](../docs/media.md) (the manifest).
+[docs/media.md](../docs/media.md) and [docs/records.md](../docs/records.md) (the manifest).
 
 ```bash
 cargo test
@@ -30,7 +30,12 @@ For Android, `blake3` compiles C for NEON, so point `cc` at the NDK, for example
   signs, source verifies). `plan_totals` computes a plan's totals;
   `Plan::check_request(index)` is the source's check, during the copy, that
   the target asks only for entries the plan has to copy.
-- `FileHasher`: streaming BLAKE3.
+- `Manifest`: `files`, then `records` (messages, calls, contacts, blocked
+  numbers), numbered after the files in plans and receipts; `len()` and
+  `entry(index)` give either kind.
+- `FileHasher`: streaming BLAKE3. `record_identity(kind, fields)`: a record's
+  identity, BLAKE3 in key-derivation mode (context `graphite/1 record
+  identity`) over the kind and each field with its length.
 
 Every error is final for the pairing or stream that raised it.
 
@@ -78,10 +83,11 @@ and share.
   FIPS 204 context strings `graphite/1 manifest` (source), `graphite/1 plan`
   and `graphite/1 receipt` (both target). The plan carries the hash of the
   signed manifest; the receipt carries the hashes of the signed manifest and
-  plan. Plan and receipt name every manifest entry exactly once, by index. A
-  plan's totals must add up: counts per status, and bytes to copy as the sum
-  of the sent sizes of the entries to copy, each sent hash counted once (same
-  bytes at two paths are copied once). Plan statuses are to copy, present,
+  plan. Plan and receipt name every manifest entry, files and records, exactly
+  once, by index. A plan's totals must add up: counts per status, and bytes to
+  copy as the sum of the sent sizes of the entries to copy, each file's sent
+  hash and each record's identity counted once (same bytes at two paths, or a
+  message saved twice, are copied once). Plan statuses are to copy, present,
   present in trash and unticked. A receipt entry is not copied as unticked
   exactly when the plan has it unticked. Signing checks the same rules as
   verifying, and the target re-verifies the manifest before signing a plan or
@@ -122,7 +128,10 @@ Our own tests only (no official vectors exist for these):
   does not have to copy, a plan or receipt for another
   manifest, a receipt for another plan, missing, duplicated or unknown
   entries, wrong totals, a validly signed but invalid plan or receipt refused
-  by the source, unsafe paths.
+  by the source, unsafe paths. Records: the encoding round trip and an unknown
+  kind refused, entries numbered after the files through plan, request check
+  and receipt, totals once per identity, and `record_identity` separating
+  kinds and field boundaries.
 
 ## Crates
 

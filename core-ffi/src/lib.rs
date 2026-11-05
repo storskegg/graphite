@@ -188,11 +188,31 @@ pub struct ManifestEntry {
     pub sent: FileDigest,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RecordKind {
+    Sms,
+    Mms,
+    Call,
+    Contact,
+    BlockedNumber,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RecordEntry {
+    pub kind: RecordKind,
+    pub label: String,
+    pub date_ms: Option<i64>,
+    pub identity: Vec<u8>,
+    pub sent: FileDigest,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Manifest {
     pub metadata: MetadataChoice,
     pub stripper_version: String,
     pub files: Vec<ManifestEntry>,
+    /// Numbered after the files in plans and receipts.
+    pub records: Vec<RecordEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -303,6 +323,30 @@ impl FileDigest {
     }
 }
 
+impl From<RecordKind> for core::RecordKind {
+    fn from(k: RecordKind) -> Self {
+        match k {
+            RecordKind::Sms => Self::Sms,
+            RecordKind::Mms => Self::Mms,
+            RecordKind::Call => Self::Call,
+            RecordKind::Contact => Self::Contact,
+            RecordKind::BlockedNumber => Self::BlockedNumber,
+        }
+    }
+}
+
+impl From<core::RecordKind> for RecordKind {
+    fn from(k: core::RecordKind) -> Self {
+        match k {
+            core::RecordKind::Sms => Self::Sms,
+            core::RecordKind::Mms => Self::Mms,
+            core::RecordKind::Call => Self::Call,
+            core::RecordKind::Contact => Self::Contact,
+            core::RecordKind::BlockedNumber => Self::BlockedNumber,
+        }
+    }
+}
+
 impl Manifest {
     fn to_core(&self) -> Result<core::Manifest> {
         Ok(core::Manifest {
@@ -320,6 +364,19 @@ impl Manifest {
                         modified_ms: f.modified_ms,
                         original: f.original.to_core()?,
                         sent: f.sent.to_core()?,
+                    })
+                })
+                .collect::<Result<_>>()?,
+            records: self
+                .records
+                .iter()
+                .map(|r| {
+                    Ok(core::RecordEntry {
+                        kind: r.kind.into(),
+                        label: r.label.clone(),
+                        date_ms: r.date_ms,
+                        identity: hash32(&r.identity)?,
+                        sent: r.sent.to_core()?,
                     })
                 })
                 .collect::<Result<_>>()?,
@@ -341,6 +398,17 @@ impl Manifest {
                     modified_ms: f.modified_ms,
                     original: FileDigest::from_core(&f.original),
                     sent: FileDigest::from_core(&f.sent),
+                })
+                .collect(),
+            records: m
+                .records
+                .into_iter()
+                .map(|r| RecordEntry {
+                    kind: r.kind.into(),
+                    label: r.label,
+                    date_ms: r.date_ms,
+                    identity: r.identity.to_vec(),
+                    sent: FileDigest::from_core(&r.sent),
                 })
                 .collect(),
         }
@@ -660,6 +728,13 @@ pub fn blake3_hash(bytes: Vec<u8>) -> Vec<u8> {
     core::FileHasher::hash(&bytes).to_vec()
 }
 
+/// The identity of a record from its normalized fields (docs/records.md).
+#[uniffi::export]
+pub fn record_identity(kind: RecordKind, fields: Vec<Vec<u8>>) -> Vec<u8> {
+    let fields: Vec<&[u8]> = fields.iter().map(Vec::as_slice).collect();
+    core::record_identity(kind.into(), &fields).to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,6 +772,13 @@ mod tests {
                 date_added_ms: None,
                 modified_ms: 2,
                 original: digest.clone(),
+                sent: digest.clone(),
+            }],
+            records: vec![RecordEntry {
+                kind: RecordKind::Call,
+                label: "Calls/+15550100".into(),
+                date_ms: Some(3),
+                identity: record_identity(RecordKind::Call, vec![b"+15550100".to_vec()]),
                 sent: digest,
             }],
         };
@@ -706,10 +788,16 @@ mod tests {
             manifest
         );
 
-        let entries = vec![PlanEntry {
-            index: 0,
-            status: PlanStatus::ToCopy,
-        }];
+        let entries = vec![
+            PlanEntry {
+                index: 0,
+                status: PlanStatus::ToCopy,
+            },
+            PlanEntry {
+                index: 1,
+                status: PlanStatus::Present,
+            },
+        ];
         let plan = Plan {
             manifest_hash: manifest_hash(signed_manifest.clone()),
             totals: plan_totals(manifest.clone(), entries.clone()).unwrap(),
@@ -722,16 +810,24 @@ mod tests {
             .verify_plan(signed_plan.clone(), signed_manifest.clone())
             .unwrap();
         assert_eq!(verified, plan);
-        assert!(plan_check_request(verified, 0).is_ok());
+        assert!(plan_check_request(verified.clone(), 0).is_ok());
+        assert!(plan_check_request(verified, 1).is_err());
 
         let receipt = Receipt {
             manifest_hash: manifest_hash(signed_manifest.clone()),
             plan_hash: plan_hash(signed_plan.clone()),
-            entries: vec![ReceiptEntry {
-                index: 0,
-                status: ReceiptStatus::CopiedVerified,
-                note: String::new(),
-            }],
+            entries: vec![
+                ReceiptEntry {
+                    index: 0,
+                    status: ReceiptStatus::CopiedVerified,
+                    note: String::new(),
+                },
+                ReceiptEntry {
+                    index: 1,
+                    status: ReceiptStatus::PresentVerified,
+                    note: String::new(),
+                },
+            ],
         };
         let signed_receipt = target
             .sign_receipt(
