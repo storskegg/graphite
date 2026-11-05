@@ -45,12 +45,22 @@ data class Options(val metadata: MetadataChoice, val androidMedia: Boolean) {
     }
 }
 
-/** Either way: progress to show on the other phone; [label] goes under the bar (bytes, rate, time left). */
-data class ProgressMsg(val text: String, val done: Long, val total: Long, val label: String = "") {
-    fun encode() = BinWriter().str(text).i64(done).i64(total).str(label).finish()
+/**
+ * Either way: progress to show on the other phone; [label] goes under the bar (bytes, rate, time
+ * left), [tiles] is a [TileMap.delta] (empty for none).
+ */
+data class ProgressMsg(val text: String, val done: Long, val total: Long, val label: String = "", val tiles: ByteArray = ByteArray(0)) {
+    fun encode() = BinWriter().str(text).i64(done).i64(total).str(label).bytes(tiles).finish()
+
+    override fun equals(other: Any?) = other is ProgressMsg && text == other.text && done == other.done &&
+        total == other.total && label == other.label && tiles.contentEquals(other.tiles)
+
+    override fun hashCode() = listOf(text, done, total, label, tiles.contentHashCode()).hashCode()
 
     companion object {
-        fun decode(b: ByteArray) = BinReader(b).run { ProgressMsg(str(), i64(), i64(), if (more()) str() else "") }
+        fun decode(b: ByteArray) = BinReader(b).run {
+            ProgressMsg(str(), i64(), i64(), if (more()) str() else "", if (more()) bytes() else ByteArray(0))
+        }
     }
 }
 

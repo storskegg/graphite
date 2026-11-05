@@ -25,6 +25,7 @@ import io.github.storskegg.graphite.ui.Screen
 import io.github.storskegg.graphite.util.BinReader
 import io.github.storskegg.graphite.util.BinWriter
 import io.github.storskegg.graphite.util.formatBytes
+import io.github.storskegg.graphite.util.hex
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -63,11 +64,17 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
             "already on the new phone, ${t.presentInTrash} in the new phone's trash (not copied), ${t.unticked} unticked." +
             "\n\nStart the copy on the new phone."))
         Flows.expect(ch, Msg.START)
+        // The same map as the new phone's, from the same manifest and plan.
+        val statuses = plan.entries.sortedBy { it.index }.map { it.status }
+        val toCopy = statuses.indices.filter { statuses[it] == io.github.storskegg.graphite.ffi.PlanStatus.TO_COPY }
+        val primaries = Comparison.primaries(manifest.files, toCopy)
+        val tiles = TileMap(manifest.files.map { it.path }, manifest.files.map { it.sent.size.toLong() }, TileMap.initial(statuses),
+            toCopy.associateWith { primaries.getValue(manifest.files[it].sent.blake3.hex()) })
 
         // 4. Answer requests until the target is done.
         var sent = 0L
         var count = 0
-        val meter = Meter(ctl, "Sending", t.bytesToCopy.toLong(), t.toCopy.toInt())
+        val meter = Meter(ctl, "Sending", t.bytesToCopy.toLong(), t.toCopy.toInt(), tiles)
         phases = Phases()
         while (true) {
             val m = phases.time("wait for the new phone") { ch.receive() }
@@ -78,8 +85,11 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
                     val e = manifest.files[i]
                     val n = ++count
                     val before = sent
+                    tiles.set(i, Tile.ACTIVE)
                     meter.update(sent, n, e.path, force = true)
                     sendFile(i, files[i], e, manifest.metadata, i in unremovable) { off -> meter.update(before + off, n, e.path) }
+                    // Sent; the new phone's verification says whether it arrived right.
+                    tiles.set(i, Tile.DONE)
                     sent += e.sent.size.toLong()
                 }
                 Msg.COPY_DONE -> break
@@ -94,7 +104,10 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
         var m = ch.receive()
         while (m.type == Msg.PROGRESS) {
             val pm = ProgressMsg.decode(m.body)
-            ctl.show(Screen("Verifying", "New phone is verifying: ${pm.text}", progress = Progress(pm.done, pm.total, pm.label)))
+            val first = tiles.apply(pm.tiles)
+            if (first) log("tiles from the new phone: ${tiles.snapshot().summary()}")
+            ctl.show(Screen("Verifying", "New phone is verifying: ${pm.text}", progress = Progress(pm.done, pm.total, pm.label),
+                tiles = tiles.snapshot()))
             m = ch.receive()
         }
         if (m.type == Msg.ERROR) throw io.github.storskegg.graphite.session.PeerAbortException(BinReader(m.body).str())
@@ -114,6 +127,8 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
             "${manifest.files[it.index.toInt()].path}: ${it.note}"
         } + if (notes.size > 20) "\n… and ${notes.size - 20} more" else ""
         log("receipt verified: $summary")
+        tiles.applyReceipt(receipt.entries)
+        log("tiles after verification: ${tiles.snapshot().summary()}")
         notes.forEach { log("receipt note: ${manifest.files[it.index.toInt()].path}: ${it.note}") }
 
         // 6. Removal, only if the user asks.
@@ -122,7 +137,7 @@ class SourceMedia(private val ctl: Controller, private val p: Paired) {
         while (true) {
             val a = ctl.ask(Screen("Copy verified", "The new phone signed a receipt and this phone checked it.\n\n$summary.$noteText" +
                 if (removable.isEmpty()) "" else "\n\nYou can now move what was verified to this phone's trash (kept for 30 days). Nothing is preselected.",
-                buttons = if (removable.isEmpty()) listOf("Done") else listOf(REMOVE, "Done")))
+                tiles = tiles.snapshot(), buttons = if (removable.isEmpty()) listOf("Done") else listOf(REMOVE, "Done")))
             if (a.button == REMOVE) { Removal(ctl).run(files, manifest, removable); return }
             // The receipt is only good for this session: leaving now means another transfer before any removal.
             if (removable.isNotEmpty()) {

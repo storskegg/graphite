@@ -231,7 +231,8 @@ The scanner derives it from a photo's EXIF (and from the modification time when
 EXIF has no time-zone offset) and from a video's MP4 `mvhd` creation time, so
 identical bytes plus the restored modification time give the same `DATE_TAKEN` as on the source. An item whose source value came
 from the app that saved it, not from its bytes, can end up with another date or
-none; see [File dates](#when-the-old-phones-date_taken-came-from-an-app) and
+none. Verification then steers the scanner for those files; see
+[File dates](#when-the-old-phones-date_taken-came-from-an-app) and
 [spike.md](spike.md#5-mediastore-dates).
 
 While the target finishes one small file, the old phone is already sending the
@@ -251,7 +252,10 @@ with the manifest and notes any difference.
 
 Reading back a large library takes minutes, so both phones show its progress: files
 and bytes verified, the rate, the time left and the current file. The target sends
-it to the source as progress messages until the receipt.
+it to the source as progress messages until the receipt. Both also draw a
+treemap of the transfer, one tile per manifest entry sized by its bytes and
+grouped by folder. The tiles change colour as files are copied and verified;
+the progress messages carry only the tiles that changed.
 
 The **receipt** gives every manifest entry one status:
 
@@ -330,14 +334,18 @@ zone), and 4 with no date (modification time days after the EXIF date).
 cause this. Not yet checked: whether the scanner also uses the GPS time for the
 zone, which that choice removes.
 
-**Open, for the user to decide.** graphite can still make the scanner derive
-the old phone's date: for just the files whose `DATE_TAKEN` came out different,
-set the copy's modification time to the old phone's `DATE_TAKEN` and rescan.
-`DateTakenTest` shows the scanner then derives it exactly. The cost is that
-those files lose their own modification time, which this section otherwise
-keeps: file managers would show when the photo was taken instead of when the
-file was last changed. Until decided, graphite keeps the modification time, and
-the receipt notes each file whose date taken differs.
+**Decided (the user, 5 November 2026): steer the scanner for those files.**
+During verification, for each copied file whose `DATE_TAKEN` came out unlike the
+old phone's, graphite sets the copy's modification time to the old phone's
+`DATE_TAKEN` and rescans it. It keeps that only if the scanner then gives exactly
+the old phone's value; otherwise it puts the modification time back. Those files
+give up their own modification time (file managers show when the photo was
+taken), and the receipt says so for each. The bytes are untouched, so "Keep all
+metadata" still copies them unchanged. Files already on the new phone are left
+as they are. Under "Remove all but what display needs" the date taken is gone on
+purpose and nothing is steered. `DateTakenTest` checks this on API 37: copies
+published 3.5 hours off, or with no date, come out exactly right, in about
+0.2 s per file.
 
 The receipt notes every file whose modification time or `DATE_TAKEN` did not come
 out as on the source. It does not list `DATE_ADDED`, which never matches; it says

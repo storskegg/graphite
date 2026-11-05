@@ -85,7 +85,9 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         val order = primaries.values.sortedWith(compareBy({ entries[it].dateAddedMs ?: Long.MAX_VALUE }, { it }))
         val outcomes = HashMap<Int, Outcome>()
         val copiedIds = HashMap<Int, Long>()
-        copy(entries, order, outcomes, copiedIds)
+        val tiles = TileMap(entries.map { it.path }, entries.map { it.sent.size.toLong() }, TileMap.initial(statuses), primaryOf)
+        copy(entries, order, outcomes, copiedIds, tiles)
+        log("tiles after the copy: ${tiles.snapshot().summary()}")
         ch.send(Msg.COPY_DONE, ByteArray(0))
 
         // 5. Verification, without the cache, with progress here and on the old phone.
@@ -93,14 +95,20 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         val present = compared.indices.filter { statuses[it] == PlanStatus.PRESENT }
         val toVerify = copiedIds.keys.size + present.size
         val verifyBytes = copiedIds.keys.sumOf { entries[it].sent.size.toLong() } + present.sumOf { entries[it].sent.size.toLong() }
-        val meter = Meter(ctl, "Verifying", verifyBytes, toVerify) { ch.send(Msg.PROGRESS, it.encode()) }
+        // Back to waiting, then blue as each file reads back right.
+        tiles.reset(setOf(Tile.DONE, Tile.PRESENT), Tile.PENDING)
+        val meter = Meter(ctl, "Verifying", verifyBytes, toVerify, tiles) { ch.send(Msg.PROGRESS, it.encode()) }
         var verified = 0L
         var n = 0
         fun checked(i: Int, check: () -> Outcome): Outcome {
             n++
             val before = verified
+            tiles.set(i, Tile.ACTIVE)
             meter.update(before, n, entries[i].path, force = true)
-            return check().also { verified = before + entries[i].sent.size.toLong() }
+            return check().also {
+                verified = before + entries[i].sent.size.toLong()
+                tiles.set(i, if (it is Outcome.Verified) Tile.DONE else Tile.FAILED)
+            }
         }
         for ((i, id) in copiedIds) {
             outcomes[i] = checked(i) { verify(i, id, manifest, notes) { got -> meter.update(verified + got, n, entries[i].path) } }
@@ -115,6 +123,8 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         if (toVerify > 0) meter.update(verifyBytes, toVerify, "done", force = true)
         val receiptEntries = Receipts.build(entries, statuses, outcomes, primaryOf, notes)
         val receipt = Receipt(manifestHash(mm.signed), planHash(signedPlan), receiptEntries)
+        tiles.applyReceipt(receiptEntries)
+        log("tiles after verification: ${tiles.snapshot().summary()}")
         val signedReceipt = p.session.signReceipt(receipt, mm.signed, signedPlan)
         ch.send(Msg.RECEIPT, signedReceipt)
         val ra = Verdict.decode(Flows.expect(ch, Msg.RECEIPT_ANSWER).body)
@@ -128,7 +138,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
                 "\"Recently added\" on this phone shows today for the copies: Android sets that date itself.\n\n" +
                 (if (ra.ok) "The old phone checked the signed receipt. You can now choose there whether to remove " +
                     "what was verified from the old phone." else "Why: ${ra.why}"),
-            buttons = listOf("Done")))
+            tiles = tiles.snapshot(), buttons = listOf("Done")))
     }
 
     /** Pending items left by an interrupted run are deleted; published ones stay and count as present. */
@@ -270,10 +280,11 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             if (inv.testScope.isNotEmpty()) "\nTEST BUILD: only folders named \"${inv.testScope}\"." else ""
     }
 
-    private fun copy(entries: List<io.github.storskegg.graphite.ffi.ManifestEntry>, order: List<Int>, outcomes: MutableMap<Int, Outcome>, copiedIds: MutableMap<Int, Long>) {
+    private fun copy(entries: List<io.github.storskegg.graphite.ffi.ManifestEntry>, order: List<Int>, outcomes: MutableMap<Int, Outcome>,
+                     copiedIds: MutableMap<Int, Long>, tiles: TileMap) {
         val total = order.sumOf { entries[it].sent.size.toLong() }
         var done = 0L
-        val meter = Meter(ctl, "Copying", total, order.size)
+        val meter = Meter(ctl, "Copying", total, order.size, tiles)
         phases = Phases()
         // Files in request order; a file that failed once goes again at the end.
         val queue = ArrayDeque(order)
@@ -283,10 +294,11 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         ahead = -1
         while (queue.isNotEmpty()) {
             val i = queue.removeFirst()
-            if (stopRest) { outcomes[i] = Outcome.NotCopied(NotCopiedReason.DID_NOT_FIT); continue }
+            if (stopRest) { outcomes[i] = Outcome.NotCopied(NotCopiedReason.DID_NOT_FIT); tiles.set(i, Tile.SKIPPED); continue }
             val e = entries[i]
             val attempt = attempts.merge(i, 1, Int::plus)!!
             if (attempt == 1) n++
+            tiles.set(i, Tile.ACTIVE)
             meter.update(done, n, e.path, force = true)
             val before = done
             val next = queue.firstOrNull()
@@ -298,6 +310,7 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
                     buttons = listOf("Retry", "Stop copying")))
                 if (a.button == "Retry") {
                     attempts[i] = attempt - 1
+                    tiles.set(i, Tile.PENDING)
                     // After the file already requested ahead, if any: it is on its way.
                     if (ahead >= 0) queue.add(1, i) else queue.addFirst(i)
                     continue
@@ -309,10 +322,16 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
             val (o, id) = r
             if (o is Outcome.NotCopied && o.reason == NotCopiedReason.FAILED && attempt < 2) {
                 log("retrying ${e.path} later: ${o.note}")
+                tiles.set(i, Tile.PENDING)
                 queue.addLast(i)
                 continue
             }
             outcomes[i] = o
+            tiles.set(i, when {
+                o is Outcome.Verified -> Tile.DONE
+                o is Outcome.NotCopied && o.reason == NotCopiedReason.FAILED -> Tile.FAILED
+                else -> Tile.SKIPPED
+            })
             if (id != null) copiedIds[i] = id
             done += e.sent.size.toLong()
         }
@@ -412,11 +431,15 @@ class TargetMedia(private val ctl: Controller, private val p: Paired) {
         if (hex !in expected) return Outcome.NotCopied(NotCopiedReason.FAILED, "changed on the new phone during the transfer")
         val dateNotes = mutableListOf<String>()
         if (check) {
-            val mtime = row.path?.let { File(it).lastModified() }
-            if (mtime != null && mtime / 1000 != e.modifiedMs / 1000) dateNotes += "modification time ${mtime / 1000} s, not ${e.modifiedMs / 1000} s"
-            val wantTaken = e.dateTakenMs
-            if (manifest.metadata != MetadataChoice.REMOVE_ALL_BUT_DISPLAY && wantTaken != null && row.dateTakenMs != wantTaken) {
-                dateNotes += "date taken ${row.dateTakenMs ?: "none"}, not $wantTaken"
+            val wantTaken = e.dateTakenMs.takeIf { manifest.metadata != MetadataChoice.REMOVE_ALL_BUT_DISPLAY }
+            // The old phone's date came from an app, not its scanner: steer this phone's scanner (docs/media.md, "File dates").
+            val steered = wantTaken != null && row.dateTakenMs != wantTaken && store.steerDateTaken(id, wantTaken)
+            if (steered) {
+                dateNotes += "modification time set to the date taken, so that this phone shows the old phone's date taken"
+            } else {
+                val mtime = row.path?.let { File(it).lastModified() }
+                if (mtime != null && mtime / 1000 != e.modifiedMs / 1000) dateNotes += "modification time ${mtime / 1000} s, not ${e.modifiedMs / 1000} s"
+                if (wantTaken != null && row.dateTakenMs != wantTaken) dateNotes += "date taken ${row.dateTakenMs ?: "none"}, not $wantTaken"
             }
         }
         if (dateNotes.isNotEmpty()) notes[i] = dateNotes.joinToString("; ")

@@ -54,6 +54,17 @@ old phone over the cable (needs USB debugging on the old phone, see below).
 7. The new phone verifies everything and signs a receipt; the old phone checks
    it. Then, only if you ask, the old phone moves verified files to its trash.
 
+While copying and verifying, both phones show a treemap above the progress:
+one square per file, sized by its bytes, grouped by folder (folder names where
+they fit). Gray is waiting, yellow in progress, blue done or verified, red
+failed. Teal is already on the new phone. Dark gray is not copied (unticked, in
+the new phone's trash, did not fit). For verification the copied squares turn
+gray again and go blue as each file reads back right. Tap a square to see its
+file, size and state. The map stays on the last screens. Both phones lay it out
+from the same manifest; during verification the old phone's colours come from
+the new phone's progress messages (only the squares that changed), and the
+signed receipt sets the final colours on both.
+
 **The role check is not attested yet.** A phone counts as GrapheneOS when
 GrapheneOS's own system apps are present. The screen and this README say so;
 hardware attestation goes in at the marked seam in
@@ -137,7 +148,7 @@ receipts and MediaStore rows:
 
 | Scenario | Checks |
 |---|---|
-| keep | "Keep all metadata": 9 copied and verified, the duplicate once; date taken and modification time as on the source |
+| keep | "Keep all metadata": 9 copied and verified, the duplicate once; date taken and modification time as on the source; both last screens show the treemap with 9 done, and the old phone got the new phone's tiles mid-verification (screenshots in the log folder) |
 | again | A second run copies nothing |
 | strip | "Remove location and identifiers": photo and video dates kept |
 | display | "Remove all but what display needs": no date taken left |
@@ -166,8 +177,11 @@ boot on an M-series Mac (arm64 images).
 ### Device test
 
 `app/src/androidTest/.../DateTakenTest.kt` records what MediaStore makes of
-`DATE_TAKEN` for a copy graphite publishes (see "File dates" in
-[docs/media.md](../docs/media.md)):
+`DATE_TAKEN` for a copy graphite publishes, and that steering it through the
+modification time after publishing works (see "File dates" in
+[docs/media.md](../docs/media.md)). A cold-booted AVD left with the harness's
+PIN stays locked and the app can't start: run `adb shell locksettings verify
+--old 1234` first.
 
 ```bash
 ANDROID_SERIAL=emulator-5580 ./gradlew :app:connectedDebugAndroidTest
@@ -250,6 +264,8 @@ location and identifiers"):
 - 8 photos' date taken differs from the old phone's: see "File dates" in
   [docs/media.md](../docs/media.md). The old phone's values were written by
   other apps (Android's restore app, a browser), not derived from the files.
+  Since 5 November verification steers the new phone's scanner for such files
+  (modification time := the old phone's date taken); not yet run on the phones.
 - Nothing was removed from either phone.
 
 Still to check on the phones (next phone session):
@@ -257,7 +273,8 @@ Still to check on the phones (next phone session):
 - The speed work: per-phase timing (`copy phases:` and `send phases:` in the
   log) on the same library, and whether requesting small files ahead helps there.
 - Live verification progress and Done on both phones' last screens.
-- The `DATE_TAKEN` fix, if one is chosen.
+- The `DATE_TAKEN` steering on the 8 photos (`steer` lines in the log, and the
+  receipt's notes).
 - Running out of space mid-copy (only the up-front refusal was tested).
 - Motion photos, camera HEIC and DNG from real cameras.
 - Attestation (the role check is unattested; the seam is in `role/`).

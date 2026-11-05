@@ -47,6 +47,10 @@ class MainActivity : Activity() {
     private var drawn: Screen? = null
     private var prompting = false
     private var authError: String? = null
+    // Kept across redraws, so a picked tile stays picked while the progress updates.
+    private lateinit var treemap: io.github.storskegg.graphite.ui.TreemapView
+    private lateinit var legend: TextView
+    private lateinit var picked: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,6 +58,12 @@ class MainActivity : Activity() {
         val pad = (16 * resources.displayMetrics.density).toInt()
         statusView = TextView(this).apply { textSize = 12f; setPadding(0, 0, 0, pad / 2) }
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        picked = TextView(this).apply { textSize = 13f; typeface = Typeface.MONOSPACE; text = "Tap a square to see its file." }
+        legend = TextView(this).apply { textSize = 13f; setPadding(0, pad / 4, 0, 0) }
+        treemap = io.github.storskegg.graphite.ui.TreemapView(this).apply {
+            setPadding(0, pad / 2, 0, 0)
+            onPick = { picked.text = it }
+        }
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, pad)
@@ -122,6 +132,11 @@ class MainActivity : Activity() {
             textSize = 48f; typeface = Typeface.MONOSPACE; gravity = Gravity.CENTER
             setPadding(0, 24, 0, 24)
         })
+        s.tiles?.let { t ->
+            treemap.tiles = t
+            legend.text = io.github.storskegg.graphite.ui.TreemapView.legend(t)
+            for (v in listOf(treemap, legend, picked)) { (v.parent as? LinearLayout)?.removeView(v); content.addView(v) }
+        }
         if (s.body.isNotEmpty()) content.addView(TextView(this).apply {
             text = s.body; textSize = 16f; setPadding(0, 16, 0, 16); setTextIsSelectable(true)
         })

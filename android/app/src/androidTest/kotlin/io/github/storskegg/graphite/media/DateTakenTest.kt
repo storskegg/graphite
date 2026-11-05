@@ -66,6 +66,20 @@ class DateTakenTest {
         assertEquals(derived, report("  after a rescan", rescan(afterPublish)))
     }
 
+    /** What graphite does when the date taken comes out wrong: mtime := the old phone's date taken, then rescan. */
+    @Test fun steeredAfterPublishing() {
+        val viaScanner = publish("gt-probe-f.jpg", mtime = trueMs + 6 * 24 * hour)
+        assertNull(report("published 6 days off", viaScanner))
+        check(File(path(viaScanner)).setLastModified(trueMs)) { "setLastModified failed after publishing" }
+        assertEquals(trueMs, report("  mtime := date taken, scanFile", rescan(viaScanner)))
+
+        val viaPending = publish("gt-probe-g.jpg", mtime = trueMs + 3 * hour + hour / 2)
+        assertEquals(trueMs + 3 * hour + hour / 2, report("published 3.5 h off", viaPending))
+        val store = TargetStore(ctx)
+        assertEquals(true, store.steerDateTaken(viaPending, trueMs))
+        assertEquals(trueMs, report("  TargetStore.steerDateTaken", viaPending))
+    }
+
     /** Inserts a pending copy of the test JPEG, sets its mtime, publishes it; its id. */
     private fun publish(name: String, mtime: Long, dateTaken: Long? = null): Long {
         val uri = cr.insert(images, ContentValues().apply {

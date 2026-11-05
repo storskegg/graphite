@@ -36,6 +36,14 @@ releases yet.
   verification from progress messages. Per-phase timing in the log after each copy.
 - `android/`: the new phone requests the next small file (16 MB or less) while
   it finishes the current one, so the old phone reads and sends it meanwhile.
+- `android/`: a treemap of the transfer on both phones, above the progress:
+  one square per file sized by its bytes, grouped by folder. The squares are
+  coloured by state during the copy and the verification, and a tap shows the
+  file. The old phone gets the new phone's changes with the progress messages.
+- `android/`: when a copy's `DATE_TAKEN` comes out unlike the old phone's (the
+  old value was written by an app), verification sets the copy's modification
+  time to the old phone's date taken and rescans, keeping it only if the date
+  then matches. The receipt notes each such file.
 - `android/`: the no-duplicates rule runs both ways: after an earlier stripping
   run, "Keep all metadata" skips an original whose stripped copy is there.
 - `android/emulator-test.sh`: the media flow end to end on two emulators (API 37

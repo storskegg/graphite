@@ -102,6 +102,32 @@ class TargetStore(private val c: Context) {
         return touched
     }
 
+    /**
+     * For a published copy whose DATE_TAKEN came out unlike the old phone's: sets its modification
+     * time to [takenMs] and rescans, as the scanner takes a JPEG's missing time zone from it. Keeps
+     * that only if the scanner then gives exactly [takenMs]; otherwise puts the modification time
+     * back. Whether it was kept.
+     */
+    fun steerDateTaken(id: Long, takenMs: Long): Boolean {
+        val path = row(id)?.path ?: return false
+        val file = File(path)
+        val was = file.lastModified()
+        if (!file.setLastModified(takenMs)) { log("steer $id: setLastModified failed"); return false }
+        scan(path)
+        val now = row(id)?.dateTakenMs
+        log("steer $id: date taken ${now ?: "none"} with the modification time at $takenMs")
+        if (now == takenMs) return true
+        file.setLastModified(was)
+        scan(path)
+        return false
+    }
+
+    private fun scan(path: String) {
+        val done = java.util.concurrent.CountDownLatch(1)
+        android.media.MediaScannerConnection.scanFile(c, arrayOf(path), null) { _, _ -> done.countDown() }
+        if (!done.await(30, java.util.concurrent.TimeUnit.SECONDS)) log("scan $path timed out")
+    }
+
     fun delete(id: Long) {
         runCatching { cr.delete(ContentUris.withAppendedId(files, id), null, null) }.onFailure { log("delete $id: $it") }
     }

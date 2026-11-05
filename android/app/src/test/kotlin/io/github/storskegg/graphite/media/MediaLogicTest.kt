@@ -286,13 +286,70 @@ class ReceiptsTest {
         val back = ManifestMsg.decode(m.encode())
         assertTrue(back.signed.contentEquals(m.signed))
         assertEquals(m.unremovable, back.unremovable)
-        val p = ProgressMsg("2,140 of 5,485 files: DCIM/a.jpg", 7, 9, "7 B of 9 B at 1 MB/s")
+        val p = ProgressMsg("2,140 of 5,485 files: DCIM/a.jpg", 7, 9, "7 B of 9 B at 1 MB/s", byteArrayOf(2, 0, 0, 0, 0))
         assertEquals(p, ProgressMsg.decode(p.encode()))
     }
 
     @Test fun progressFromAnOlderBuildHasNoLabel() {
         val old = io.github.storskegg.graphite.util.BinWriter().str("Hashing").i64(1).i64(2).finish()
         assertEquals(ProgressMsg("Hashing", 1, 2, ""), ProgressMsg.decode(old))
+    }
+
+    @Test fun squarifyFillsTheBoxInProportion() {
+        val w = listOf(500.0, 300.0, 120.0, 50.0, 20.0, 9.0, 1.0)
+        val r = TileMap.squarify(w, 0.0, 0.0, 1.0, 0.75)
+        assertEquals(0.75, r.sumOf { it[2] * it[3] }, 1e-9)
+        for (i in w.indices) {
+            assertEquals(w[i] / w.sum() * 0.75, r[i][2] * r[i][3], 1e-9)
+            assertTrue(r[i][0] >= -1e-9 && r[i][1] >= -1e-9 && r[i][0] + r[i][2] <= 1 + 1e-9 && r[i][1] + r[i][3] <= 0.75 + 1e-9)
+            for (j in 0 until i) {
+                val overlapX = minOf(r[i][0] + r[i][2], r[j][0] + r[j][2]) - maxOf(r[i][0], r[j][0])
+                val overlapY = minOf(r[i][1] + r[i][3], r[j][1] + r[j][3]) - maxOf(r[i][1], r[j][1])
+                assertFalse("tiles $i and $j overlap", overlapX > 1e-9 && overlapY > 1e-9)
+            }
+        }
+        // Squarified: the big ones are not slivers.
+        assertTrue(maxOf(r[0][2] / r[0][3], r[0][3] / r[0][2]) < 3)
+    }
+
+    @Test fun tilesAreGroupedByFolderAndFollowTheirPrimary() {
+        val paths = listOf("DCIM/Camera/a.jpg", "DCIM/Camera/b.jpg", "Download/c.pdf", "Pictures/a.jpg", "top.txt")
+        val map = TileMap(paths, listOf(400, 100, 300, 400, 0), List(5) { Tile.PENDING }, follows = mapOf(3 to 0))
+        assertEquals(listOf("DCIM/Camera", "Download", "Pictures", ""), map.groups.map { it.name })
+        val cam = map.groups[0]
+        for (i in 0..1) {
+            assertTrue(map.rects[4 * i] >= cam.x - 1e-6 && map.rects[4 * i] + map.rects[4 * i + 2] <= cam.x + cam.w + 1e-6)
+            assertTrue(map.rects[4 * i + 1] >= cam.y - 1e-6 && map.rects[4 * i + 1] + map.rects[4 * i + 3] <= cam.y + cam.h + 1e-6)
+        }
+        assertTrue("an empty file still gets a tile", map.rects[4 * 4 + 2] * map.rects[4 * 4 + 3] > 0)
+        map.set(0, Tile.DONE)
+        assertEquals(Tile.DONE, map[3])
+        val snap = map.snapshot()
+        assertEquals(0, snap.at(map.rects[0] + map.rects[2] / 2, map.rects[1] + map.rects[3] / 2))
+        assertEquals("2 done, 3 waiting", snap.summary().let { s -> s.split(", ").sortedBy { it.contains("waiting") }.joinToString(", ") })
+    }
+
+    @Test fun tileDeltasBringTheOtherPhoneUpToDate() {
+        val paths = (0 until 6).map { "DCIM/$it.jpg" }
+        val plan = listOf(PlanStatus.TO_COPY, PlanStatus.TO_COPY, PlanStatus.PRESENT, PlanStatus.UNTICKED, PlanStatus.PRESENT_IN_TRASH, PlanStatus.TO_COPY)
+        val here = TileMap(paths, List(6) { 10L }, TileMap.initial(plan))
+        val there = TileMap(paths, List(6) { 10L }, TileMap.initial(plan))
+        assertEquals(listOf(Tile.PENDING, Tile.PENDING, Tile.PRESENT, Tile.SKIPPED, Tile.SKIPPED, Tile.PENDING), (0 until 6).map { here[it] })
+        there.set(0, Tile.DONE)  // the old phone's own idea during the copy; the first delta replaces it
+        here.set(1, Tile.FAILED)
+        there.apply(here.delta())
+        assertEquals((0 until 6).map { here[it] }, (0 until 6).map { there[it] })
+        here.set(5, Tile.ACTIVE)
+        val d = here.delta()
+        assertEquals("only what changed", 1 + 4 + 5, d.size)
+        there.apply(d)
+        assertEquals(Tile.ACTIVE, there[5])
+        here.applyReceipt(listOf(
+            io.github.storskegg.graphite.ffi.ReceiptEntry(0u, ReceiptStatus.CopiedVerified, ""),
+            io.github.storskegg.graphite.ffi.ReceiptEntry(1u, ReceiptStatus.NotCopied(NotCopiedReason.FAILED), ""),
+            io.github.storskegg.graphite.ffi.ReceiptEntry(5u, ReceiptStatus.NotCopied(NotCopiedReason.DID_NOT_FIT), ""),
+        ))
+        assertEquals(listOf(Tile.DONE, Tile.FAILED, Tile.SKIPPED), listOf(here[0], here[1], here[5]))
     }
 
     @Test fun phasesSumPerNameAndReportTheRest() {

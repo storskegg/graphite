@@ -137,6 +137,9 @@ trytap() {
             read -r x1 y1 x2 y2 <<<"$(echo "$b" | tr -c '0-9' ' ')"
             sh_ "$1" input tap $(( (x1 + x2) / 2 )) $(( (y1 + y2) / 2 )); sleep 1; return 0
         fi
+        # Below the fold (the treemap and a long receipt push the buttons down): scroll, from under the map.
+        read -r w h <<<"$(sh_ "$1" wm size | tail -1 | tr -c '0-9' ' ')"
+        [ -n "${h:-}" ] && sh_ "$1" input swipe $(( w / 2 )) $(( h * 85 / 100 )) $(( w / 2 )) $(( h * 40 / 100 )) 300
         sleep 1
     done
     return 1
@@ -248,10 +251,22 @@ cut_socket() {  # the emulators' "cable pull": reset the source's connection mid
     sh_ "$S" "iptables -D OUTPUT -p tcp --dport $PORT -j REJECT --reject-with tcp-reset"
 }
 
+tiles() {  # tiles N: both final screens show the treemap with N files done, and it changed on the way
+    local t s
+    t=$(ui "$T" | grep -oE 'content-desc="Treemap: [^"]*"' || true); s=$(ui "$S" | grep -oE 'content-desc="Treemap: [^"]*"' || true)
+    echo "  treemap: new phone \"${t#content-desc=}\", old phone \"${s#content-desc=}\""
+    [ "$t" = "content-desc=\"Treemap: $1 done\"" ] || fail "the new phone's treemap is not $1 done"
+    [ "$s" = "$t" ] || fail "the two treemaps differ"
+    "$ADB" -s "$T" logcat -d | grep -qF "tiles after the copy: $1 done" || fail "the new phone's tiles after the copy are not $1 done"
+    # The old phone's map during verification came from the new phone, with tiles still waiting then.
+    "$ADB" -s "$S" logcat -d | grep -qE "tiles from the new phone: .*(waiting|in progress)" || fail "the old phone never got the new phone's tiles"
+    sh_ "$T" "screencap -p" >"$LOG/treemap-target.png"; sh_ "$S" "screencap -p" >"$LOG/treemap-source.png"
+}
+
 # --- scenarios -----------------------------------------------------------------
 
 keep() {
-    fresh_target; local r; r=$(transfer "Keep all metadata"); done_both
+    fresh_target; local r; r=$(transfer "Keep all metadata"); tiles 9; done_both
     expect "$r" "^9 copied and verified, 0 already"   # the duplicate counts as copied; its bytes went once
     [ "$(rows "$T" | grep -c 'gt-gps')" = 1 ] || fail "the duplicate was copied twice"
     local src; src=$(rows "$S" | grep "DCIM/graphite-test/gt-gps.jpg|" || true)

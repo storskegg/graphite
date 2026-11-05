@@ -11,6 +11,8 @@ data class Screen(
     /** The six digits, drawn large. */
     val code: String? = null,
     val progress: Progress? = null,
+    /** The transfer's treemap, drawn above the progress. */
+    val tiles: io.github.storskegg.graphite.media.Tiles? = null,
     val choices: List<Choice> = emptyList(),
     val buttons: List<String> = emptyList(),
     /** Ask for the user's authentication as soon as this screen shows. */

@@ -17,6 +17,7 @@ class Meter(
     private val title: String,
     private val total: Long,
     private val files: Int,
+    private val tiles: TileMap? = null,
     private val onShow: ((ProgressMsg) -> Unit)? = null,
 ) {
     private val t0 = System.nanoTime()
@@ -31,11 +32,12 @@ class Meter(
         val shown = done.coerceIn(0, total)
         val label = "${formatBytes(shown)} of ${formatBytes(total)}" + rateAndLeft(shown, total, (now - t0) / 1e9)
         val counted = "%,d of %,d".format(n, files)
-        ctl.show(Screen(title, "$counted: $path", progress = Progress(shown, total, label)))
-        onShow?.invoke(ProgressMsg("$counted files: $path", shown, total, label))
+        val snapshot = tiles?.snapshot()
+        ctl.show(Screen(title, "$counted: $path", progress = Progress(shown, total, label), tiles = snapshot))
+        onShow?.invoke(ProgressMsg("$counted files: $path", shown, total, label, tiles?.delta() ?: ByteArray(0)))
         if (now - lastLogged > LOG_EVERY_MS * 1_000_000) {
             lastLogged = now
-            log("$title: $label, file $n of $files")
+            log("$title: $label, file $n of $files" + (snapshot?.let { "; tiles: ${it.summary()}" } ?: ""))
         }
     }
 
